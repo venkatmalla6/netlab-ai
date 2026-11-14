@@ -27,12 +27,14 @@ import { LookingGlass } from '@/pages/LookingGlass'
 import { Analytics } from '@/pages/Analytics'
 import { UserManagement } from '@/pages/UserManagement'
 import { Settings } from '@/pages/Settings'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 
 export const App: React.FC = () => {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<MainLayout />}>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<MainLayout />}>
           <Route index element={<Dashboard />} />
           <Route path="assistant" element={<AIAssistant />} />
           <Route path="topology" element={<TopologyBuilder />} />
@@ -63,6 +65,7 @@ export const App: React.FC = () => {
         </Route>
       </Routes>
     </BrowserRouter>
+  </ErrorBoundary>
   )
 }
 

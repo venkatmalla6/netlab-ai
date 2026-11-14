@@ -10,9 +10,10 @@ export const TopBar: React.FC = () => {
   useEffect(() => {
     apiClient
       .getSettingsStatus()
-      .then((status) => {
-        const groq = status.find((s: any) => s.name === 'groq')
-        setGroqOnline(groq?.available ?? true)
+      .then((data) => {
+        const list = Array.isArray(data) ? data : (data?.services || [])
+        const groq = list.find((s: any) => (s.name || '').toLowerCase().includes('groq'))
+        setGroqOnline(groq ? groq.status === 'connected' : true)
       })
       .catch(() => setGroqOnline(true))
   }, [])
