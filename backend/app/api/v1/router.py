@@ -13,6 +13,7 @@ from app.api.v1.eve_ng import router as eve_ng_router
 from app.api.v1.executions import router as executions_router
 from app.api.v1.labs import router as labs_router
 from app.api.v1.learning import router as learning_router
+from app.api.v1.looking_glass import router as looking_glass_router
 from app.api.v1.monitoring import router as monitoring_router
 from app.api.v1.packets import router as packets_router
 from app.api.v1.reports import router as reports_router
@@ -45,6 +46,7 @@ api_v1_router.include_router(monitoring_router)
 api_v1_router.include_router(packets_router)
 api_v1_router.include_router(security_router)
 api_v1_router.include_router(learning_router)
+api_v1_router.include_router(looking_glass_router)
 api_v1_router.include_router(assessments_router)
 api_v1_router.include_router(reports_router)
 api_v1_router.include_router(users_router)

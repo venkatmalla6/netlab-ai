@@ -42,6 +42,10 @@ async def run_all_tests():
         ("test_preflight_compliance_check", suite.test_preflight_compliance_check),
         ("test_copilot_autonomous_investigation", suite.test_copilot_autonomous_investigation),
         ("test_network_analytics_endpoint", suite.test_network_analytics_endpoint),
+        ("test_bgp_looking_glass_overview_and_trace", suite.test_bgp_looking_glass_overview_and_trace),
+        ("test_rbac_user_management", suite.test_rbac_user_management),
+        ("test_config_rollback_and_golden", suite.test_config_rollback_and_golden),
+        ("test_executive_dossier", suite.test_executive_dossier),
     ]
 
     passed = 0

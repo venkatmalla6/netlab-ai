@@ -23,6 +23,7 @@ import { LearningRoadmap } from '@/pages/LearningRoadmap'
 import { FailureSimulator } from '@/pages/FailureSimulator'
 import { NetworkDocumentation } from '@/pages/NetworkDocumentation'
 import { AIWhiteboard } from '@/pages/AIWhiteboard'
+import { LookingGlass } from '@/pages/LookingGlass'
 import { Analytics } from '@/pages/Analytics'
 import { UserManagement } from '@/pages/UserManagement'
 import { Settings } from '@/pages/Settings'
@@ -54,6 +55,7 @@ export const App: React.FC = () => {
           <Route path="failure-sim" element={<FailureSimulator />} />
           <Route path="docs-gen" element={<NetworkDocumentation />} />
           <Route path="whiteboard" element={<AIWhiteboard />} />
+          <Route path="looking-glass" element={<LookingGlass />} />
           <Route path="analytics" element={<Analytics />} />
           <Route path="users" element={<UserManagement />} />
           <Route path="settings" element={<Settings />} />

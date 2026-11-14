@@ -51,7 +51,7 @@ export const apiClient = {
   executeCommands: (data: { device_id: number; commands: string[]; mode: string; confirmed?: boolean }) =>
     api.post('/executions', data).then((r) => r.data),
 
-  // Configurations
+  // Configurations & Rollback
   getConfigurations: (deviceId?: number) => api.get('/configurations', { params: { device_id: deviceId } }).then((r) => r.data),
   generateConfig: (data: { device_name: string; vendor?: string; platform?: string; protocols?: string[]; prompt?: string; device_id?: number }) =>
     api.post('/configurations/generate', data).then((r) => r.data),
@@ -59,6 +59,8 @@ export const apiClient = {
   validateConfig: (data: { config_text: string; vendor?: string }) => api.post('/configurations/validate', data).then((r) => r.data),
   translateConfig: (data: { source_vendor: string; target_vendor: string; config_text: string }) =>
     api.post('/configurations/translate', data).then((r) => r.data),
+  rollbackConfig: (configId: number) => api.post(`/configurations/${configId}/rollback`).then((r) => r.data),
+  markGoldenConfig: (configId: number) => api.put(`/configurations/${configId}/golden`).then((r) => r.data),
 
   // Topologies & IaC Export
   exportTopology: (topologyId: number, format: 'ansible' | 'terraform' | 'eve-unl' | 'netmiko') =>
@@ -72,13 +74,18 @@ export const apiClient = {
   runPreflightCheck: (data: { nodes?: any[]; edges?: any[]; configurations?: Record<string, string> }) =>
     api.post('/verification/preflight', data).then((r) => r.data),
 
+  // BGP Looking Glass
+  getBgpOverview: () => api.get('/network/looking-glass/overview').then((r) => r.data),
+  traceAsPath: (prefix: string) => api.get('/network/looking-glass/trace', { params: { prefix } }).then((r) => r.data),
+
   // AI Copilot & Multi-Step Agent
   investigateCopilot: (data: { problem_statement: string; target_device_id?: number; device_name?: string }) =>
     api.post('/ai/copilot/investigate', data).then((r) => r.data),
 
-  // Monitoring & Analytics
+  // Monitoring & Analytics & Executive Dossier
   getMonitoringOverview: () => api.get('/monitoring/overview').then((r) => r.data),
   getNetworkAnalytics: () => api.get('/reports/network-analytics').then((r) => r.data),
+  getExecutiveDossier: () => api.get('/reports/executive-dossier').then((r) => r.data),
 
   // Academy, Lab Grading & Questions
   getTracks: () => api.get('/learning/tracks').then((r) => r.data),
@@ -87,6 +94,12 @@ export const apiClient = {
   getInterviewQuestions: () => api.get('/assessments/interview/questions').then((r) => r.data),
   gradeLab: (data: { lab_id?: string; task_title: string; device_name: string; config_text: string }) =>
     api.post('/assessments/grade-lab', data).then((r) => r.data),
+
+  // Multi-Tenant Users & RBAC
+  getUsers: () => api.get('/users').then((r) => r.data),
+  createUser: (data: any) => api.post('/users', data).then((r) => r.data),
+  updateUser: (userId: string, data: any) => api.put(`/users/${userId}`, data).then((r) => r.data),
+  deleteUser: (userId: string) => api.delete(`/users/${userId}`).then((r) => r.data),
 
   // Settings & Status
   getSettings: () => api.get('/settings').then((r) => r.data),

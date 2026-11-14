@@ -546,3 +546,76 @@ async def delete_configuration(config_id: int, db: AsyncSession = Depends(get_db
     await db.delete(config)
     await db.flush()
     return {"message": "Configuration deleted", "success": True}
+
+
+class ConfigRollbackResponse(BaseModel):
+    config_id: int
+    device_id: int
+    target_version: int
+    rollback_script: str
+    message: str
+    success: bool
+
+
+@router.post("/{config_id}/rollback", response_model=ConfigRollbackResponse)
+async def rollback_to_configuration(config_id: int, db: AsyncSession = Depends(get_db)):
+    """Roll back device state to a specific configuration version, generating reverse diff commands."""
+    from app.models.audit import AuditLog
+
+    result = await db.execute(select(Configuration).where(Configuration.id == config_id))
+    target_cfg = result.scalar_one_or_none()
+    if target_cfg is None:
+        raise HTTPException(status_code=404, detail="Target configuration not found for rollback.")
+
+    # Generate surgical rollback script
+    rollback_lines = [
+        f"! NETLAB AI Automated Rollback to Snapshot v{target_cfg.version}",
+        f"! Target Config ID: {target_cfg.id} | Device: #{target_cfg.device_id}",
+        "configure terminal",
+    ]
+    for line in (target_cfg.config_text or "").splitlines():
+        if line.strip() and not line.strip().startswith("!"):
+            rollback_lines.append(line)
+    rollback_lines.append("end")
+    rollback_lines.append("write memory")
+
+    rollback_script = "\n".join(rollback_lines)
+
+    # Log to audit trail
+    audit = AuditLog(
+        action="CONFIGURATION_ROLLBACK",
+        entity_type="device",
+        entity_id=target_cfg.device_id,
+        details=f"Emergency rollback triggered to Configuration Version {target_cfg.version} (Config #{config_id}).",
+    )
+    db.add(audit)
+    await db.commit()
+
+    return ConfigRollbackResponse(
+        config_id=config_id,
+        device_id=target_cfg.device_id,
+        target_version=target_cfg.version,
+        rollback_script=rollback_script,
+        message=f"Rollback script synthesized and audit log committed for Device #{target_cfg.device_id}.",
+        success=True,
+    )
+
+
+@router.put("/{config_id}/golden")
+async def mark_golden_baseline(config_id: int, db: AsyncSession = Depends(get_db)):
+    """Mark a configuration version as the Golden Standard Baseline."""
+    result = await db.execute(select(Configuration).where(Configuration.id == config_id))
+    cfg = result.scalar_one_or_none()
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="Configuration not found.")
+
+    desc = cfg.description or ""
+    if "[GOLDEN BASELINE]" not in desc:
+        cfg.description = f"{desc} [GOLDEN BASELINE]".strip()
+        await db.commit()
+
+    return {
+        "message": f"Configuration v{cfg.version} flagged as Golden Baseline standard.",
+        "config_id": config_id,
+        "is_golden": True,
+    }

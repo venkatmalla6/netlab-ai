@@ -307,3 +307,103 @@ async def test_network_analytics_endpoint(client):
     assert "OSPF" in data["protocol_distribution"]
     assert "Core-WAN-Link1" in data["traffic_bandwidth_mbps"]
     assert data["mttr_minutes"] > 0
+
+
+async def test_bgp_looking_glass_overview_and_trace(client):
+    # 1. Overview
+    res = await client.get("/api/v1/network/looking-glass/overview")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["local_asn"] in (65000, 65001)
+    assert data["total_peers"] >= 1
+    assert len(data["routes"]) >= 1
+
+    # 2. Trace regular prefix
+    trace_res = await client.get("/api/v1/network/looking-glass/trace?prefix=198.51.100.0/24")
+    assert trace_res.status_code == 200
+    trace = trace_res.json()
+    assert trace["prefix"] == "198.51.100.0/24"
+    assert len(trace["hops"]) >= 2
+    assert "Private ASN" in trace["verdict"] or "valid" in trace["verdict"].lower()
+
+    # 3. Trace multi-hop route
+    trace_priv = await client.get("/api/v1/network/looking-glass/trace?prefix=10.0.0.0/24")
+    assert trace_priv.status_code == 200
+    priv_data = trace_priv.json()
+    assert priv_data["bogon_as_detected"] is True
+    assert len(priv_data["as_path"]) == 3
+
+
+async def test_rbac_user_management(client):
+    # 1. List users
+    res = await client.get("/api/v1/users")
+    assert res.status_code == 200
+    users = res.json()
+    assert len(users) >= 1
+    assert any(u["role"] == "Super Admin" for u in users)
+
+    # 2. Create new user
+    new_user = {
+        "username": "netsec_auditor",
+        "email": "audit@netlab.internal",
+        "full_name": "Security Auditor",
+        "role": "Student / Auditor",
+    }
+    create_res = await client.post("/api/v1/users", json=new_user)
+    assert create_res.status_code == 201
+    created = create_res.json()
+    assert created["username"] == "netsec_auditor"
+    assert created["role"] == "Student / Auditor"
+    user_id = created["id"]
+
+    # 3. Update user role
+    update_res = await client.put(f"/api/v1/users/{user_id}", json={"role": "NOC Engineer"})
+    assert update_res.status_code == 200
+    updated = update_res.json()
+    assert updated["role"] == "NOC Engineer"
+
+    # 4. Delete user
+    del_res = await client.delete(f"/api/v1/users/{user_id}")
+    assert del_res.status_code == 200
+    assert del_res.json()["success"] is True
+
+
+async def test_config_rollback_and_golden(client):
+    # 1. Create a configuration record to work with
+    cfg_payload = {
+        "device_id": 1,
+        "config_text": "hostname R1\ninterface GigabitEthernet0/0\n ip address 10.0.0.1 255.255.255.0\n",
+        "description": "Baseline v1 configuration",
+        "created_by": "admin",
+    }
+    create_cfg = await client.post("/api/v1/configurations", json=cfg_payload)
+    assert create_cfg.status_code == 201
+    cfg = create_cfg.json()
+    cfg_id = cfg["id"]
+
+    # 2. Mark golden baseline
+    golden_res = await client.put(f"/api/v1/configurations/{cfg_id}/golden")
+    assert golden_res.status_code == 200
+    golden_data = golden_res.json()
+    assert golden_data["is_golden"] is True
+    assert golden_data["config_id"] == cfg_id
+
+    # 3. Rollback configuration
+    rollback_res = await client.post(f"/api/v1/configurations/{cfg_id}/rollback")
+    assert rollback_res.status_code == 200
+    rb_data = rollback_res.json()
+    assert rb_data["success"] is True
+    assert rb_data["config_id"] == cfg_id
+    assert "configure terminal" in rb_data["rollback_script"]
+
+
+async def test_executive_dossier(client):
+    res = await client.get("/api/v1/reports/executive-dossier")
+    assert res.status_code == 200
+    dossier = res.json()
+    assert "NETLAB AI" in dossier["title"]
+    assert dossier["health_score"] >= 80
+    assert dossier["total_assets"] >= 1
+    assert "NETLAB AI" in dossier["html_report"]
+    assert "# NETLAB AI" in dossier["markdown_report"]
+
