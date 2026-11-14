@@ -38,7 +38,7 @@ class EVENGClient:
         try:
             async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
                 resp = await client.get(f"{self.base_url}/status")
-                return resp.status_code == 200
+                return resp.status_code in (200, 412)
         except Exception:
             return False
 
@@ -60,6 +60,19 @@ class EVENGClient:
             return False
 
     async def list_labs(self) -> List[Dict[str, Any]]:
+        # EVE-NG 5/6 stores root labs in /folders/
+        res = await self._get("/folders/")
+        if isinstance(res, dict) and "labs" in res:
+            return [
+                {
+                    "name": lab.get("file", "").replace(".unl", ""),
+                    "path": lab.get("path", ""),
+                    "file": lab.get("file", ""),
+                    "mtime": lab.get("mtime", ""),
+                }
+                for lab in res.get("labs", [])
+            ]
+        # Fallback to /labs
         labs = await self._get("/labs")
         if isinstance(labs, dict):
             return [{"name": k, **(v if isinstance(v, dict) else {})} for k, v in labs.items()]
@@ -240,7 +253,7 @@ class EVENGClient:
                 if resp.status_code == 200:
                     data = resp.json()
                     return data.get("data", data)
-                elif resp.status_code == 401:
+                elif resp.status_code in (401, 412):
                     if await self.login():
                         return await self._get(path)
                 return None
@@ -257,7 +270,7 @@ class EVENGClient:
                 resp = await client.post(f"{self.base_url}{path}", json=json_data, cookies=cookies)
                 if resp.status_code in (200, 201):
                     return resp.json()
-                elif resp.status_code == 401:
+                elif resp.status_code in (401, 412):
                     if await self.login():
                         return await self._post(path, json_data)
                 return None
@@ -274,7 +287,7 @@ class EVENGClient:
                 resp = await client.put(f"{self.base_url}{path}", json=json_data, cookies=cookies)
                 if resp.status_code in (200, 201):
                     return resp.json()
-                elif resp.status_code == 401:
+                elif resp.status_code in (401, 412):
                     if await self.login():
                         return await self._put(path, json_data)
                 return None
