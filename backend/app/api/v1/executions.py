@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from enum import Enum
 from typing import List, Optional
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -304,3 +304,129 @@ async def execute_commands(
         results=results,
         explanation=f"All {len(req.commands)} commands successfully executed on {device_name}.",
     )
+
+
+@router.websocket("/ws/terminal/{device_id}")
+async def websocket_terminal_session(websocket: WebSocket, device_id: int):
+    """Bidirectional interactive WebSocket VTY console for network devices."""
+    await websocket.accept()
+
+    from app.core.database import async_session_factory
+
+    device_name = f"Router-{device_id}"
+    interfaces: List[Interface] = []
+
+    async with async_session_factory() as session:
+        d_res = await session.execute(
+            select(Device).options(selectinload(Device.interfaces)).where(Device.id == device_id)
+        )
+        found_dev = d_res.scalar_one_or_none()
+        if found_dev:
+            device_name = found_dev.name
+            interfaces = found_dev.interfaces or []
+
+    # State: user_exec (>), priv_exec (#), global_config ((config)#), iface_config ((config-if)#)
+    mode = "priv_exec"
+    current_iface = ""
+
+    def get_prompt():
+        if mode == "user_exec":
+            return f"{device_name}>"
+        elif mode == "priv_exec":
+            return f"{device_name}#"
+        elif mode == "global_config":
+            return f"{device_name}(config)#"
+        elif mode == "iface_config":
+            return f"{device_name}(config-if)#{current_iface} "
+        return f"{device_name}#"
+
+    # Welcome banner
+    await websocket.send_json({
+        "type": "banner",
+        "device_name": device_name,
+        "banner": (
+            f"NETLAB AI Real-Time WebSocket VTY Shell v2.1\n"
+            f"Connected to {device_name} (Cisco IOSv Architecture)\n"
+            f"Type ? for context-sensitive help or exit to disconnect.\n"
+        ),
+        "prompt": get_prompt(),
+        "mode": mode,
+    })
+
+    try:
+        while True:
+            raw_msg = await websocket.receive_text()
+            cmd = raw_msg.strip()
+
+            if not cmd:
+                await websocket.send_json({
+                    "type": "output",
+                    "command": "",
+                    "output": "",
+                    "prompt": get_prompt(),
+                    "mode": mode,
+                })
+                continue
+
+            output = ""
+
+            # Navigation & mode transitions
+            if cmd in ("enable", "en"):
+                mode = "priv_exec"
+            elif cmd in ("disable", "dis"):
+                mode = "user_exec"
+            elif cmd in ("configure terminal", "conf t", "config t"):
+                if mode in ("priv_exec", "global_config", "iface_config"):
+                    mode = "global_config"
+                else:
+                    output = "% Error: Must enter privileged exec mode first via 'enable'."
+            elif cmd.startswith("interface ") or cmd.startswith("int "):
+                if mode in ("global_config", "iface_config"):
+                    mode = "iface_config"
+                    current_iface = cmd.split()[-1]
+                else:
+                    output = "% Error: Incomplete command or invalid mode."
+            elif cmd in ("exit", "end", "quit"):
+                if mode == "iface_config":
+                    mode = "global_config"
+                elif mode == "global_config":
+                    mode = "priv_exec"
+                elif mode == "priv_exec":
+                    mode = "user_exec"
+                else:
+                    output = "[Session terminated by user]"
+            elif cmd in ("?", "help"):
+                if mode == "user_exec":
+                    output = "Exec commands:\n  enable    Turn on privileged commands\n  ping      Send echo messages\n  show      Show running system information\n  exit      Exit session"
+                elif mode == "priv_exec":
+                    output = "Privileged commands:\n  configure Enter configuration mode\n  disable   Turn off privileged commands\n  ping      Send echo messages\n  show      Show running system information\n  reload    Halt and perform a cold restart"
+                elif mode == "global_config":
+                    output = "Configure commands:\n  interface Select an interface to configure\n  router    Enable a routing process\n  ip        Global IP configuration subcommands\n  hostname  Set system network name\n  exit      Exit from configure mode"
+                else:
+                    output = "Interface configuration commands:\n  ip address Set IPv4 address and mask\n  no shutdown Enable interface\n  shutdown   Administratively disable interface\n  exit       Exit interface configuration"
+            elif cmd == "show ip interface brief" or cmd == "show ip int brief" or cmd == "sh ip int br":
+                output = _format_show_ip_int_brief(device_name, interfaces)
+            elif cmd == "show ip route" or cmd == "sh ip ro":
+                output = _format_show_ip_route(device_name, interfaces)
+            elif cmd == "show running-config" or cmd == "show run" or cmd == "sh run":
+                output = _format_show_running_config(device_name, interfaces)
+            elif cmd == "show version" or cmd == "sh ver":
+                output = _format_show_version(device_name)
+            elif cmd.startswith("ping "):
+                target = cmd.replace("ping", "").strip()
+                output = f"Type escape sequence to abort.\nSending 5, 100-byte ICMP Echos to {target}, timeout is 2 seconds:\n!!!!!\nSuccess rate is 100 percent (5/5), round-trip min/avg/max = 1/2/4 ms"
+            else:
+                output = f"Command '{cmd}' applied to {device_name}."
+
+            await websocket.send_json({
+                "type": "output",
+                "command": cmd,
+                "output": output,
+                "prompt": get_prompt(),
+                "mode": mode,
+            })
+
+    except WebSocketDisconnect:
+        logger.info("Terminal WebSocket disconnected for device_id=%d", device_id)
+    except Exception as exc:
+        logger.error("Error in terminal WebSocket: %s", exc)

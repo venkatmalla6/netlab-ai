@@ -34,6 +34,8 @@ import {
   Download,
   Copy,
   FileCode,
+  ShieldCheck,
+  AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -109,6 +111,9 @@ export const TopologyBuilder: React.FC = () => {
   const [exportFormat, setExportFormat] = useState<'ansible' | 'terraform' | 'eve-unl' | 'netmiko'>('ansible')
   const [exportData, setExportData] = useState<any | null>(null)
   const [isExporting, setIsExporting] = useState(false)
+  const [showPreflightModal, setShowPreflightModal] = useState(false)
+  const [preflightData, setPreflightData] = useState<any | null>(null)
+  const [isPreflighting, setIsPreflighting] = useState(false)
   const [statusNotification, setStatusNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [deploymentResult, setDeploymentResult] = useState<any | null>(null)
 
@@ -278,6 +283,22 @@ export const TopologyBuilder: React.FC = () => {
     }
   }
 
+  const handleRunPreflight = async () => {
+    setIsPreflighting(true)
+    try {
+      const res = await apiClient.runPreflightCheck({
+        nodes: nodes.map((n) => ({ id: n.id, data: n.data })),
+        edges: edges.map((e) => ({ source: e.source, target: e.target, data: e.data })),
+      })
+      setPreflightData(res)
+      setShowPreflightModal(true)
+    } catch (err: any) {
+      alert(`Pre-flight check error: ${err.message}`)
+    } finally {
+      setIsPreflighting(false)
+    }
+  }
+
   const handleSave = async () => {
     setIsSaving(true)
     setStatusNotification(null)
@@ -416,6 +437,17 @@ export const TopologyBuilder: React.FC = () => {
           >
             <Download className="h-3.5 w-3.5 text-cyan-400" />
             {isExporting ? 'Exporting...' : 'Export IaC'}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRunPreflight}
+            disabled={isPreflighting || nodes.length === 0}
+            className="gap-1.5 text-xs text-slate-200 hover:border-emerald-500"
+          >
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+            {isPreflighting ? 'Checking...' : 'Pre-Flight Check'}
           </Button>
 
           <Button
@@ -849,6 +881,91 @@ export const TopologyBuilder: React.FC = () => {
                 className="text-xs bg-slate-800 hover:bg-slate-700 text-white"
               >
                 Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pre-Flight Compliance Audit Modal */}
+      {showPreflightModal && preflightData && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0b101c] border border-emerald-600/50 rounded-xl max-w-3xl w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-5 w-5 text-emerald-400" />
+                <h3 className="font-bold text-white text-sm">Pre-Flight Compliance & Topology Audit</h3>
+              </div>
+              <Badge
+                variant={preflightData.status === 'PASSED' ? 'success' : 'destructive'}
+                className="text-xs font-bold"
+              >
+                Health: {preflightData.health_score}% ({preflightData.status})
+              </Badge>
+            </div>
+
+            <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-300">
+              {preflightData.summary}
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-xs text-slate-400">
+                <span>Checks Evaluated: <strong className="text-white">{preflightData.passed_checks} / {preflightData.total_checks_evaluated} Passed</strong></span>
+                <span>Findings Detected: <strong className={preflightData.findings.length === 0 ? 'text-emerald-400' : 'text-amber-400'}>{preflightData.findings.length}</strong></span>
+              </div>
+
+              <div className="max-h-72 overflow-y-auto space-y-2.5">
+                {preflightData.findings.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-emerald-400 rounded-lg bg-emerald-950/20 border border-emerald-500/30">
+                    <CheckCircle2 className="h-8 w-8 mx-auto mb-2 text-emerald-400" />
+                    All Batfish-style compliance rules passed! Zero IP conflicts, MTU mismatches, or isolated nodes detected.
+                  </div>
+                ) : (
+                  preflightData.findings.map((f: any, idx: number) => (
+                    <div
+                      key={idx}
+                      className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
+                        f.severity === 'critical'
+                          ? 'border-red-500/40 bg-red-950/15 text-slate-200'
+                          : 'border-amber-500/40 bg-amber-950/15 text-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-white flex items-center gap-2">
+                          <AlertTriangle className={`h-4 w-4 ${f.severity === 'critical' ? 'text-red-400' : 'text-amber-400'}`} />
+                          {f.title}
+                        </span>
+                        <Badge variant="outline" className={`text-[10px] uppercase ${f.severity === 'critical' ? 'border-red-500/50 text-red-400' : 'border-amber-500/50 text-amber-400'}`}>
+                          {f.severity}
+                        </Badge>
+                      </div>
+
+                      <p className="text-[11px] text-slate-300">{f.description}</p>
+
+                      {f.affected_entities?.length > 0 && (
+                        <div className="text-[11px] text-slate-400 font-mono">
+                          Entities: {f.affected_entities.join(', ')}
+                        </div>
+                      )}
+
+                      {f.remediation_command && (
+                        <div className="bg-slate-900/80 p-2 rounded border border-slate-800 text-[11px] font-mono text-emerald-400">
+                          Fix: {f.remediation_command}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-800/80">
+              <Button
+                size="sm"
+                onClick={() => setShowPreflightModal(false)}
+                className="text-xs bg-slate-800 hover:bg-slate-700 text-white"
+              >
+                Close Audit
               </Button>
             </div>
           </div>

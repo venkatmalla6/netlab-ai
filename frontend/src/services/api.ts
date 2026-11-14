@@ -69,9 +69,16 @@ export const apiClient = {
     api.post('/troubleshooting/diagnose', { problem_description, affected_device_ids }).then((r) => r.data),
   verifyPing: (source_device_id: number, target_ip: string) =>
     api.post('/verification/ping', { source_device_id, target_ip }).then((r) => r.data),
+  runPreflightCheck: (data: { nodes?: any[]; edges?: any[]; configurations?: Record<string, string> }) =>
+    api.post('/verification/preflight', data).then((r) => r.data),
 
-  // Monitoring
+  // AI Copilot & Multi-Step Agent
+  investigateCopilot: (data: { problem_statement: string; target_device_id?: number; device_name?: string }) =>
+    api.post('/ai/copilot/investigate', data).then((r) => r.data),
+
+  // Monitoring & Analytics
   getMonitoringOverview: () => api.get('/monitoring/overview').then((r) => r.data),
+  getNetworkAnalytics: () => api.get('/reports/network-analytics').then((r) => r.data),
 
   // Academy, Lab Grading & Questions
   getTracks: () => api.get('/learning/tracks').then((r) => r.data),

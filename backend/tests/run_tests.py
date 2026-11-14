@@ -39,6 +39,9 @@ async def run_all_tests():
         ("test_multivendor_syntax_translation", suite.test_multivendor_syntax_translation),
         ("test_iac_topology_exports", suite.test_iac_topology_exports),
         ("test_automated_lab_grading", suite.test_automated_lab_grading),
+        ("test_preflight_compliance_check", suite.test_preflight_compliance_check),
+        ("test_copilot_autonomous_investigation", suite.test_copilot_autonomous_investigation),
+        ("test_network_analytics_endpoint", suite.test_network_analytics_endpoint),
     ]
 
     passed = 0

@@ -263,3 +263,47 @@ async def test_automated_lab_grading(client):
     assert data["score_percent"] >= 70.0
     assert data["passed"] is True
     assert len(data["evaluation_breakdown"]) == 5
+
+
+async def test_preflight_compliance_check(client):
+    req_payload = {
+        "nodes": [
+            {"id": "R1", "data": {"label": "R1", "ip": "10.10.10.1/24"}},
+            {"id": "R2", "data": {"label": "R2", "ip": "10.10.10.1/24"}},  # Duplicate IP
+        ],
+        "edges": [],
+        "configurations": {"R1": "hostname R1\nline vty 0 4\n transport input telnet\n"},
+    }
+    res = await client.post("/api/v1/verification/preflight", json=req_payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["health_score"] < 100
+    assert any(f["category"] == "IP_CONFLICT" for f in data["findings"])
+    assert any(f["category"] == "SECURITY_VULNERABILITY" for f in data["findings"])
+
+
+async def test_copilot_autonomous_investigation(client):
+    res = await client.post(
+        "/api/v1/ai/copilot/investigate",
+        json={
+            "problem_statement": "OSPF neighbor adjacency stuck in EXSTART state due to MTU",
+            "target_device_id": 1,
+            "device_name": "R1-Core",
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert "INC-" in data["incident_id"]
+    assert len(data["steps"]) >= 4
+    assert "MTU" in data["root_cause"]
+    assert "SUCCESS" in data["verification_outcome"]
+
+
+async def test_network_analytics_endpoint(client):
+    res = await client.get("/api/v1/reports/network-analytics")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_devices"] >= 1
+    assert "OSPF" in data["protocol_distribution"]
+    assert "Core-WAN-Link1" in data["traffic_bandwidth_mbps"]
+    assert data["mttr_minutes"] > 0

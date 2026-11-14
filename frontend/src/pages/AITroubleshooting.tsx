@@ -11,6 +11,8 @@ import {
   Terminal,
   Server,
   RefreshCw,
+  Bot,
+  Activity,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -26,6 +28,8 @@ export const AITroubleshooting: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [executionResult, setExecutionResult] = useState<any | null>(null)
   const [isExecuting, setIsExecuting] = useState(false)
+  const [copilotReport, setCopilotReport] = useState<any | null>(null)
+  const [isCopiloting, setIsCopiloting] = useState(false)
 
   const quickSymptoms = [
     'OSPF adjacency stuck in INIT state on Gi0/0',
@@ -61,6 +65,28 @@ export const AITroubleshooting: React.FC = () => {
       setReport(null)
     } finally {
       setIsDiagnosing(false)
+    }
+  }
+
+  const handleRunCopilot = async () => {
+    if (!problem.trim()) return
+    setIsCopiloting(true)
+    setReport(null)
+    setCopilotReport(null)
+    setExecutionResult(null)
+    setErrorMessage(null)
+
+    try {
+      const res = await apiClient.investigateCopilot({
+        problem_statement: problem,
+        target_device_id: selectedDeviceId || 1,
+        device_name: selectedDevice?.name || 'R1-Core',
+      })
+      setCopilotReport(res)
+    } catch (err: any) {
+      setErrorMessage(err.response?.data?.detail || err.message)
+    } finally {
+      setIsCopiloting(false)
     }
   }
 
@@ -148,19 +174,31 @@ export const AITroubleshooting: React.FC = () => {
             placeholder="e.g. PC1 cannot ping default gateway, OSPF neighbor stuck in 2-WAY state, BGP peer down..."
           />
 
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <span className="text-[11px] text-slate-500">
               Evaluated against Cisco IOS, Linux iproute2, and RFC specifications.
             </span>
 
-            <Button
-              onClick={handleDiagnose}
-              disabled={isDiagnosing || !problem.trim()}
-              className="gap-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 text-xs font-semibold text-white"
-            >
-              <Sparkles className="h-4 w-4" />
-              {isDiagnosing ? 'Running AI Diagnostics...' : 'Diagnose Issue with AI'}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={handleRunCopilot}
+                disabled={isCopiloting || !problem.trim()}
+                className="gap-2 text-xs border-indigo-500/40 text-indigo-300 hover:text-white hover:bg-indigo-950/40"
+              >
+                <Bot className="h-4 w-4 text-indigo-400" />
+                {isCopiloting ? 'Agent Investigating...' : 'Autonomous Copilot Loop'}
+              </Button>
+
+              <Button
+                onClick={handleDiagnose}
+                disabled={isDiagnosing || !problem.trim()}
+                className="gap-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 text-xs font-semibold text-white"
+              >
+                <Sparkles className="h-4 w-4" />
+                {isDiagnosing ? 'Running Diagnostics...' : 'Diagnose Issue with AI'}
+              </Button>
+            </div>
           </div>
 
           {errorMessage && (
@@ -200,6 +238,99 @@ export const AITroubleshooting: React.FC = () => {
               ))}
             </div>
           </div>
+        </Card>
+      )}
+
+      {/* Autonomous AI Copilot Investigation Agent Card */}
+      {copilotReport && (
+        <Card className="border-indigo-500/40 bg-[#070b14] shadow-2xl p-6 space-y-5">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-xl bg-indigo-600/20 border border-indigo-500/30 text-indigo-400">
+                <Bot className="h-6 w-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-white text-base">Autonomous Copilot Investigation</h3>
+                  <Badge variant="outline" className="text-[10px] border-indigo-500/40 text-indigo-400 font-mono">
+                    {copilotReport.incident_id}
+                  </Badge>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Target: <strong className="text-white font-mono">{copilotReport.target_device}</strong> • Confidence: <strong className="text-emerald-400">{(copilotReport.confidence_score * 100).toFixed(0)}%</strong>
+                </p>
+              </div>
+            </div>
+
+            <Badge variant="success" className="text-xs px-3 py-1 font-mono">
+              VERIFIED AUTONOMOUSLY
+            </Badge>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs space-y-1">
+              <span className="text-slate-400 block font-semibold">Identified Root Cause:</span>
+              <p className="text-amber-300 font-medium">{copilotReport.root_cause}</p>
+            </div>
+            <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 text-xs space-y-1">
+              <span className="text-slate-400 block font-semibold">Verification Outcome:</span>
+              <p className="text-emerald-400 font-medium">{copilotReport.verification_outcome}</p>
+            </div>
+          </div>
+
+          {/* Step-by-Step Agentic Trajectory */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-2">
+              <Activity className="h-4 w-4 text-indigo-400" />
+              Agentic Perception & Reasoning Trajectory
+            </h4>
+
+            <div className="space-y-2.5">
+              {copilotReport.steps?.map((step: any, idx: number) => (
+                <div
+                  key={idx}
+                  className="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 text-xs flex flex-col gap-1.5"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-white flex items-center gap-2">
+                      <span className="h-5 w-5 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-[10px]">
+                        {step.step_number}
+                      </span>
+                      {step.action}
+                    </span>
+                    <Badge variant="outline" className={`text-[10px] font-mono uppercase ${step.status === 'success' ? 'text-emerald-400 border-emerald-500/30' : 'text-amber-400 border-amber-500/30'}`}>
+                      {step.stage} • {step.status}
+                    </Badge>
+                  </div>
+
+                  {step.command_executed && (
+                    <div className="bg-slate-900 p-2 rounded text-[11px] font-mono text-cyan-300 whitespace-pre-wrap border border-slate-800">
+                      $ {step.command_executed}
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-slate-400">{step.observation}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {copilotReport.remediation_applied && (
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <span className="text-xs text-slate-400">
+                Remediation applied to buffer of {copilotReport.target_device}.
+              </span>
+              <Button
+                size="sm"
+                onClick={() => handleApplyFix(copilotReport.remediation_applied.split('\n'))}
+                disabled={isExecuting}
+                className="gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 text-xs text-white"
+              >
+                <Play className="h-3.5 w-3.5 fill-current" />
+                {isExecuting ? 'Applying...' : 'Push Remediation to Live Device'}
+              </Button>
+            </div>
+          )}
         </Card>
       )}
 
