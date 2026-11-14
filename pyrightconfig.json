@@ -1,0 +1,19 @@
+{
+  "include": [
+    "backend"
+  ],
+  "exclude": [
+    "backend/venv",
+    "frontend"
+  ],
+  "extraPaths": [
+    "backend",
+    "backend/venv/Lib/site-packages"
+  ],
+  "venvPath": "backend",
+  "venv": "venv",
+  "reportMissingImports": "warning",
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Windows"
+}
+
