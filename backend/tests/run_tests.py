@@ -36,6 +36,9 @@ async def run_all_tests():
         ("test_security_analyzer", suite.test_security_analyzer),
         ("test_academy_and_interview", suite.test_academy_and_interview),
         ("test_documentation_and_reports", suite.test_documentation_and_reports),
+        ("test_multivendor_syntax_translation", suite.test_multivendor_syntax_translation),
+        ("test_iac_topology_exports", suite.test_iac_topology_exports),
+        ("test_automated_lab_grading", suite.test_automated_lab_grading),
     ]
 
     passed = 0

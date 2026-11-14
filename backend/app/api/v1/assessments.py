@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.ai_providers.manager import ai_manager
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assessments", tags=["Assessments & Exams"])
@@ -113,5 +115,123 @@ async def evaluate_assessment(req: AssessmentEvaluationRequest):
             {"question_id": 3, "is_correct": req.answers.get(3) == 1},
         ],
         feedback="Great work! You demonstrated solid understanding of routing protocols and Layer 2 encapsulation." if score >= 75 else "Review OSPF packet types and default administrative distances.",
+    )
+
+
+class LabGradingRequest(BaseModel):
+    lab_id: Optional[str] = "ccna-ospf-01"
+    task_title: str = "Enterprise OSPF & Interface Hardening Lab"
+    device_name: str = "R1-Core"
+    config_text: str
+    target_objectives: Optional[List[str]] = None
+
+
+class ObjectiveEvaluation(BaseModel):
+    title: str
+    passed: bool
+    points_awarded: int
+    points_possible: int
+    details: str
+    recommendation: Optional[str] = None
+
+
+class LabGradingResponse(BaseModel):
+    task_title: str
+    device_name: str
+    score_percent: float
+    total_score: int
+    max_score: int
+    passed: bool
+    evaluation_breakdown: List[ObjectiveEvaluation]
+    summary_feedback: str
+
+
+@router.post("/grade-lab", response_model=LabGradingResponse)
+async def grade_lab_submission(req: LabGradingRequest):
+    """Automatically evaluate and grade a student's running configuration against lab objectives."""
+    config = req.config_text
+    lines = [line.strip() for line in config.splitlines() if line.strip() and not line.strip().startswith("!")]
+
+    objectives: List[ObjectiveEvaluation] = []
+
+    # Check 1: Hostname Configured
+    has_hostname = any(l.startswith("hostname ") and len(l.split()) > 1 for l in lines)
+    objectives.append(ObjectiveEvaluation(
+        title="1. Device Identification & Hostname",
+        passed=has_hostname,
+        points_awarded=20 if has_hostname else 0,
+        points_possible=20,
+        details="Standard hostname command present." if has_hostname else "Missing valid 'hostname <name>' command.",
+        recommendation=None if has_hostname else "Configure a descriptive hostname using 'hostname R1-Core'.",
+    ))
+
+    # Check 2: Interface IP and Activation
+    has_ip = any("ip address" in l for l in lines)
+    has_no_shut = any("no shutdown" in l for l in lines)
+    iface_ok = has_ip and has_no_shut
+    objectives.append(ObjectiveEvaluation(
+        title="2. Interface Layer 3 Addressing & Up State",
+        passed=iface_ok,
+        points_awarded=20 if iface_ok else (10 if has_ip else 0),
+        points_possible=20,
+        details="IP address assigned and 'no shutdown' enabled." if iface_ok else ("IP assigned but interface may remain administratively down." if has_ip else "No IP address assigned."),
+        recommendation=None if iface_ok else "Ensure interfaces have 'ip address <ip> <mask>' and 'no shutdown'.",
+    ))
+
+    # Check 3: OSPF Routing Process
+    has_ospf = any(l.startswith("router ospf") for l in lines)
+    has_ospf_net = any("network " in l and "area" in l for l in lines)
+    has_router_id = any(l.startswith("router-id") for l in lines)
+    ospf_ok = has_ospf and (has_ospf_net or has_router_id)
+    objectives.append(ObjectiveEvaluation(
+        title="3. OSPFv2 Routing Protocol Configuration",
+        passed=ospf_ok,
+        points_awarded=20 if ospf_ok else (10 if has_ospf else 0),
+        points_possible=20,
+        details="OSPF process active with area advertisement / router-id." if ospf_ok else "OSPF process incomplete or missing network statements.",
+        recommendation=None if ospf_ok else "Configure 'router ospf 1', 'router-id <id>', and 'network <prefix> <wildcard> area 0'.",
+    ))
+
+    # Check 4: Default Routing or Edge Gateway
+    has_default_route = any("ip route 0.0.0.0 0.0.0.0" in l or "default-information originate" in l for l in lines)
+    objectives.append(ObjectiveEvaluation(
+        title="4. Gateway & Default Route Propagation",
+        passed=has_default_route,
+        points_awarded=20 if has_default_route else 0,
+        points_possible=20,
+        details="Default static route or OSPF default-information originate is configured." if has_default_route else "No default static route or default-information originate found.",
+        recommendation=None if has_default_route else "Add 'ip route 0.0.0.0 0.0.0.0 <next-hop>' or 'default-information originate' under OSPF.",
+    ))
+
+    # Check 5: Security & Management Hardening
+    has_sec = any("transport input ssh" in l or "service password-encryption" in l or "secret" in l for l in lines)
+    objectives.append(ObjectiveEvaluation(
+        title="5. Management Plane Security (SSH / Password Encryption)",
+        passed=has_sec,
+        points_awarded=20 if has_sec else 0,
+        points_possible=20,
+        details="Management security controls (SSH / password encryption) present." if has_sec else "Vulnerable to cleartext telnet/passwords.",
+        recommendation=None if has_sec else "Enable 'service password-encryption' and 'transport input ssh' under line vty 0 4.",
+    ))
+
+    total_score = sum(o.points_awarded for o in objectives)
+    max_score = sum(o.points_possible for o in objectives)
+    pct = round((total_score / max_score) * 100, 1)
+    passed = pct >= 70.0
+
+    summary = (
+        f"Lab Assessment Complete. Score: {pct}%. Status: {'PASSED (Meets Cisco CCNA Standard)' if passed else 'RETAKE RECOMMENDED'}. "
+        f"Completed {sum(1 for o in objectives if o.passed)} of {len(objectives)} criteria."
+    )
+
+    return LabGradingResponse(
+        task_title=req.task_title,
+        device_name=req.device_name,
+        score_percent=pct,
+        total_score=total_score,
+        max_score=max_score,
+        passed=passed,
+        evaluation_breakdown=objectives,
+        summary_feedback=summary,
     )
 

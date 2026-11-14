@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: netlab-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8000
+      - DEBUG=false
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - EVE_HOST=${EVE_HOST:-}
+      - VMWARE_HOST=${VMWARE_HOST:-}
+      - DATABASE_URL=sqlite+aiosqlite:////data/netlab.db
+    volumes:
+      - netlab-data:/data
+    networks:
+      - netlab-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: netlab-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - netlab-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  netlab-data:
+    name: netlab-ai-storage
+
+networks:
+  netlab-network:
+    name: netlab-ai-network
+    driver: bridge

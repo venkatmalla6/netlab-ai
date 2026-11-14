@@ -31,6 +31,9 @@ import {
   Layers,
   Sparkles,
   RefreshCw,
+  Download,
+  Copy,
+  FileCode,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -102,6 +105,10 @@ export const TopologyBuilder: React.FC = () => {
   const [savedTopologies, setSavedTopologies] = useState<any[]>([])
   const [isDeploying, setIsDeploying] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [showExportModal, setShowExportModal] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'ansible' | 'terraform' | 'eve-unl' | 'netmiko'>('ansible')
+  const [exportData, setExportData] = useState<any | null>(null)
+  const [isExporting, setIsExporting] = useState(false)
   const [statusNotification, setStatusNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [deploymentResult, setDeploymentResult] = useState<any | null>(null)
 
@@ -256,6 +263,21 @@ export const TopologyBuilder: React.FC = () => {
     }
   }
 
+  const handleExportIaC = async (fmt: 'ansible' | 'terraform' | 'eve-unl' | 'netmiko') => {
+    setIsExporting(true)
+    setExportFormat(fmt)
+    try {
+      const topoId = savedTopologies[0]?.id || 1
+      const res = await apiClient.exportTopology(topoId, fmt)
+      setExportData(res)
+      setShowExportModal(true)
+    } catch (err: any) {
+      alert(`Export error: ${err.message}`)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
   const handleSave = async () => {
     setIsSaving(true)
     setStatusNotification(null)
@@ -383,6 +405,17 @@ export const TopologyBuilder: React.FC = () => {
           >
             <Save className="h-3.5 w-3.5 text-blue-400" />
             {isSaving ? 'Syncing...' : 'Save & Sync'}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleExportIaC('ansible')}
+            disabled={isExporting}
+            className="gap-1.5 text-xs text-slate-200 hover:border-cyan-500"
+          >
+            <Download className="h-3.5 w-3.5 text-cyan-400" />
+            {isExporting ? 'Exporting...' : 'Export IaC'}
           </Button>
 
           <Button
@@ -715,6 +748,107 @@ export const TopologyBuilder: React.FC = () => {
                 className="text-xs bg-blue-600 hover:bg-blue-500 text-white"
               >
                 Dismiss
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Infrastructure-as-Code (IaC) Export Modal */}
+      {showExportModal && exportData && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0b101c] border border-cyan-600/50 rounded-xl max-w-3xl w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <FileCode className="h-5 w-5 text-cyan-400" />
+                <h3 className="font-bold text-white text-sm">Infrastructure-as-Code (IaC) Topology Exporter</h3>
+              </div>
+              <Badge variant="outline" className="text-xs border-cyan-500/30 text-cyan-400 uppercase">
+                {exportFormat}
+              </Badge>
+            </div>
+
+            {/* Format selection tabs */}
+            <div className="flex gap-2 border-b border-slate-800 pb-2">
+              <Button
+                size="sm"
+                variant={exportFormat === 'ansible' ? 'default' : 'outline'}
+                onClick={() => handleExportIaC('ansible')}
+                className={`text-xs ${exportFormat === 'ansible' ? 'bg-cyan-600 text-white' : 'text-slate-400 border-slate-800'}`}
+              >
+                Ansible Inventory & Playbook
+              </Button>
+              <Button
+                size="sm"
+                variant={exportFormat === 'terraform' ? 'default' : 'outline'}
+                onClick={() => handleExportIaC('terraform')}
+                className={`text-xs ${exportFormat === 'terraform' ? 'bg-cyan-600 text-white' : 'text-slate-400 border-slate-800'}`}
+              >
+                Terraform (HCL)
+              </Button>
+              <Button
+                size="sm"
+                variant={exportFormat === 'eve-unl' ? 'default' : 'outline'}
+                onClick={() => handleExportIaC('eve-unl')}
+                className={`text-xs ${exportFormat === 'eve-unl' ? 'bg-cyan-600 text-white' : 'text-slate-400 border-slate-800'}`}
+              >
+                EVE-NG Lab (.unl)
+              </Button>
+              <Button
+                size="sm"
+                variant={exportFormat === 'netmiko' ? 'default' : 'outline'}
+                onClick={() => handleExportIaC('netmiko')}
+                className={`text-xs ${exportFormat === 'netmiko' ? 'bg-cyan-600 text-white' : 'text-slate-400 border-slate-800'}`}
+              >
+                Netmiko (Python)
+              </Button>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-slate-400">
+              <span>File: <strong className="text-white font-mono">{exportData.filename}</strong> ({exportData.metadata?.nodes_count} nodes, {exportData.metadata?.links_count} links)</span>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs border-slate-800 text-slate-300 hover:text-white gap-1"
+                  onClick={() => {
+                    navigator.clipboard.writeText(exportData.content)
+                    alert('Export content copied to clipboard!')
+                  }}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  Copy
+                </Button>
+                <Button
+                  size="sm"
+                  className="text-xs bg-cyan-600 hover:bg-cyan-500 text-white gap-1"
+                  onClick={() => {
+                    const blob = new Blob([exportData.content], { type: 'text/plain;charset=utf-8' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = exportData.filename
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  }}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download File
+                </Button>
+              </div>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto bg-slate-950 rounded-lg p-3 border border-slate-800 font-mono text-xs text-cyan-300 whitespace-pre-wrap">
+              {exportData.content}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-800/80">
+              <Button
+                size="sm"
+                onClick={() => setShowExportModal(false)}
+                className="text-xs bg-slate-800 hover:bg-slate-700 text-white"
+              >
+                Close
               </Button>
             </div>
           </div>

@@ -172,3 +172,94 @@ async def test_documentation_and_reports(client):
 
     audit_res = await client.get("/api/v1/reports/audit-logs")
     assert audit_res.status_code == 200
+
+
+async def test_multivendor_syntax_translation(client):
+    cisco_snippet = (
+        "hostname R1\n"
+        "interface GigabitEthernet0/0\n"
+        " ip address 10.1.1.1 255.255.255.0\n"
+        "ip route 0.0.0.0 0.0.0.0 10.1.1.254\n"
+    )
+    # Translate to Juniper JunOS
+    junos_res = await client.post(
+        "/api/v1/configurations/translate",
+        json={"source_vendor": "cisco_ios", "target_vendor": "juniper_junos", "config_text": cisco_snippet},
+    )
+    assert junos_res.status_code == 200
+    junos_data = junos_res.json()
+    assert "set system host-name R1" in junos_data["translated_config"] or "juniper" in junos_data["target_vendor"]
+
+    # Translate to Linux
+    linux_res = await client.post(
+        "/api/v1/configurations/translate",
+        json={"source_vendor": "cisco_ios", "target_vendor": "linux_iproute2", "config_text": cisco_snippet},
+    )
+    assert linux_res.status_code == 200
+    assert "ip addr add" in linux_res.json()["translated_config"] or "ip route" in linux_res.json()["translated_config"]
+
+
+async def test_iac_topology_exports(client):
+    # 1. Create a test topology
+    topo_payload = {
+        "name": "IaC-Export-Topology",
+        "description": "Integration test topology for IaC",
+        "topology_json": '{"nodes":[{"id":"R1","data":{"label":"R1","type":"router"},"position":{"x":100,"y":100}},{"id":"SW1","data":{"label":"SW1","type":"switch"},"position":{"x":300,"y":100}}],"edges":[{"source":"R1","target":"SW1"}]}',
+    }
+    create_res = await client.post("/api/v1/topologies", json=topo_payload)
+    assert create_res.status_code == 201
+    tid = create_res.json()["id"]
+
+    # Ansible export
+    ans_res = await client.get(f"/api/v1/topologies/{tid}/export/ansible")
+    assert ans_res.status_code == 200
+    assert "all:" in ans_res.json()["content"]
+
+    # Terraform export
+    tf_res = await client.get(f"/api/v1/topologies/{tid}/export/terraform")
+    assert tf_res.status_code == 200
+    assert "terraform {" in tf_res.json()["content"]
+
+    # EVE-NG XML export
+    eve_res = await client.get(f"/api/v1/topologies/{tid}/export/eve-unl")
+    assert eve_res.status_code == 200
+    assert "<lab" in eve_res.json()["content"]
+
+    # Netmiko python script export
+    net_res = await client.get(f"/api/v1/topologies/{tid}/export/netmiko")
+    assert net_res.status_code == 200
+    assert "ConnectHandler" in net_res.json()["content"]
+
+    # Cleanup
+    del_res = await client.delete(f"/api/v1/topologies/{tid}")
+    assert del_res.status_code == 200
+
+
+async def test_automated_lab_grading(client):
+    good_config = (
+        "hostname R1-Core\n"
+        "interface GigabitEthernet0/0\n"
+        " ip address 10.10.10.1 255.255.255.0\n"
+        " no shutdown\n"
+        "router ospf 1\n"
+        " router-id 1.1.1.1\n"
+        " network 10.10.10.0 0.0.0.255 area 0\n"
+        " default-information originate\n"
+        "ip route 0.0.0.0 0.0.0.0 203.0.113.2\n"
+        "service password-encryption\n"
+        "line vty 0 4\n"
+        " transport input ssh\n"
+    )
+    res = await client.post(
+        "/api/v1/assessments/grade-lab",
+        json={
+            "task_title": "Enterprise OSPF & Hardening",
+            "device_name": "R1-Core",
+            "config_text": good_config,
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["score_percent"] >= 70.0
+    assert data["passed"] is True
+    assert len(data["evaluation_breakdown"]) == 5

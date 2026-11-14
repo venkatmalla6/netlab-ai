@@ -57,6 +57,12 @@ export const apiClient = {
     api.post('/configurations/generate', data).then((r) => r.data),
   diffConfigs: (data: { source_text: string; target_text: string }) => api.post('/configurations/diff', data).then((r) => r.data),
   validateConfig: (data: { config_text: string; vendor?: string }) => api.post('/configurations/validate', data).then((r) => r.data),
+  translateConfig: (data: { source_vendor: string; target_vendor: string; config_text: string }) =>
+    api.post('/configurations/translate', data).then((r) => r.data),
+
+  // Topologies & IaC Export
+  exportTopology: (topologyId: number, format: 'ansible' | 'terraform' | 'eve-unl' | 'netmiko') =>
+    api.get(`/topologies/${topologyId}/export/${format}`).then((r) => r.data),
 
   // Troubleshooting & Verification
   runDiagnostics: (problem_description: string, affected_device_ids: number[] = []) =>
@@ -67,11 +73,13 @@ export const apiClient = {
   // Monitoring
   getMonitoringOverview: () => api.get('/monitoring/overview').then((r) => r.data),
 
-  // Academy & Questions
+  // Academy, Lab Grading & Questions
   getTracks: () => api.get('/learning/tracks').then((r) => r.data),
   getLessons: () => api.get('/learning/lessons').then((r) => r.data),
   getQuestions: () => api.get('/assessments/questions').then((r) => r.data),
   getInterviewQuestions: () => api.get('/assessments/interview/questions').then((r) => r.data),
+  gradeLab: (data: { lab_id?: string; task_title: string; device_name: string; config_text: string }) =>
+    api.post('/assessments/grade-lab', data).then((r) => r.data),
 
   // Settings & Status
   getSettings: () => api.get('/settings').then((r) => r.data),

@@ -56,6 +56,10 @@ interface GigabitEthernet0/0
   const [approvalWarning, setApprovalWarning] = useState<string | null>(null)
   const [diffResult, setDiffResult] = useState<any | null>(null)
   const [showDiffModal, setShowDiffModal] = useState<boolean>(false)
+  const [showTranslateModal, setShowTranslateModal] = useState<boolean>(false)
+  const [targetVendor, setTargetVendor] = useState<string>('juniper_junos')
+  const [isTranslating, setIsTranslating] = useState<boolean>(false)
+  const [translationResult, setTranslationResult] = useState<any | null>(null)
   const [copied, setCopied] = useState<boolean>(false)
 
   useEffect(() => {
@@ -129,6 +133,22 @@ interface GigabitEthernet0/0
       setShowDiffModal(true)
     } catch (err: any) {
       alert(`Diff error: ${err.message}`)
+    }
+  }
+
+  const handleTranslate = async () => {
+    setIsTranslating(true)
+    try {
+      const resp = await apiClient.translateConfig({
+        source_vendor: 'cisco_ios',
+        target_vendor: targetVendor,
+        config_text: configText,
+      })
+      setTranslationResult(resp)
+    } catch (err: any) {
+      alert(`Translation error: ${err.message}`)
+    } finally {
+      setIsTranslating(false)
     }
   }
 
@@ -356,6 +376,20 @@ interface GigabitEthernet0/0
                 Diff
               </Button>
               <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setShowTranslateModal(true)
+                  if (!translationResult) {
+                    handleTranslate()
+                  }
+                }}
+                className="text-xs text-slate-300 border-slate-800 hover:border-indigo-500 gap-1"
+              >
+                <RefreshCw className="h-3.5 w-3.5 text-indigo-400" />
+                Translate
+              </Button>
+              <Button
                 variant="ghost"
                 size="sm"
                 onClick={handleCopy}
@@ -479,6 +513,114 @@ interface GigabitEthernet0/0
                 className="text-xs bg-slate-800 hover:bg-slate-700 text-white"
               >
                 Close Diff
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Multi-Vendor Syntax Translation Modal */}
+      {showTranslateModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#0b101c] border border-indigo-600/50 rounded-xl max-w-3xl w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="h-5 w-5 text-indigo-400" />
+                <h3 className="font-bold text-white text-sm">Multi-Vendor Syntax Translator (Cisco ↔ Juniper ↔ Arista ↔ Linux)</h3>
+              </div>
+              <Badge variant="outline" className="text-xs border-indigo-500/30 text-indigo-400">
+                Phase 7 Engine
+              </Badge>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Source Format</label>
+                <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-xs text-white font-mono">
+                  Cisco IOS / IOS-XE
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Target Vendor Ecosystem</label>
+                <div className="flex gap-2">
+                  <select
+                    value={targetVendor}
+                    onChange={(e) => setTargetVendor(e.target.value)}
+                    className="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="juniper_junos">Juniper JunOS (set syntax)</option>
+                    <option value="arista_eos">Arista EOS (CloudVision)</option>
+                    <option value="linux_iproute2">Linux Network (iproute2)</option>
+                  </select>
+                  <Button
+                    size="sm"
+                    onClick={handleTranslate}
+                    disabled={isTranslating}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs gap-1"
+                  >
+                    {isTranslating ? 'Translating...' : 'Translate'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {translationResult && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-400">
+                    Confidence: <strong className="text-emerald-400">{(translationResult.confidence_score * 100).toFixed(0)}%</strong>
+                  </span>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs border-slate-800 text-slate-300 hover:text-white"
+                      onClick={() => {
+                        navigator.clipboard.writeText(translationResult.translated_config)
+                        alert('Translated configuration copied to clipboard!')
+                      }}
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1" />
+                      Copy Syntax
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white"
+                      onClick={() => {
+                        setConfigText(translationResult.translated_config)
+                        setShowTranslateModal(false)
+                      }}
+                    >
+                      Use in Editor
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="max-h-72 overflow-y-auto bg-slate-950 rounded-lg p-3 border border-slate-800 font-mono text-xs text-indigo-300 whitespace-pre-wrap">
+                  {translationResult.translated_config}
+                </div>
+
+                {translationResult.conversion_notes && (
+                  <div className="bg-slate-900/60 p-3 rounded-lg border border-slate-800/80 text-[11px] text-slate-400 space-y-1">
+                    <div className="font-semibold text-slate-300">Conversion Notes:</div>
+                    {translationResult.conversion_notes.map((n: string, idx: number) => (
+                      <div key={idx} className="flex items-center gap-1.5">
+                        <span className="h-1.5 w-1.5 rounded-full bg-indigo-400 inline-block" />
+                        {n}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2 border-t border-slate-800/80">
+              <Button
+                size="sm"
+                onClick={() => setShowTranslateModal(false)}
+                className="text-xs bg-slate-800 hover:bg-slate-700 text-white"
+              >
+                Close
               </Button>
             </div>
           </div>

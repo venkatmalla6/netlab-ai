@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+backend/venv/
+backend/.pytest_cache/
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Env & Secrets
+.env
+*.env.local
+
+# Database
+*.db
+netlab.db
+
+# Documentation & IDE
+.vscode/
+.idea/
+DEVELOPMENT_STATUS.md
