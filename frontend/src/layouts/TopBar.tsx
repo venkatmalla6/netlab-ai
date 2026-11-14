@@ -38,9 +38,9 @@ export const TopBar: React.FC = () => {
         <div className="flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900/80 px-3 py-1 text-xs">
           <Sparkles className="h-3.5 w-3.5 text-blue-400" />
           <span className="text-slate-300 font-medium">AI Engine:</span>
-          <span className="flex items-center gap-1.5 font-semibold text-emerald-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            Groq (Qwen 3.8 27B)
+          <span className={`flex items-center gap-1.5 font-semibold ${groqOnline ? 'text-emerald-400' : 'text-amber-400'}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${groqOnline ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`} />
+            {groqOnline ? 'Groq (Online)' : 'Local Engine'}
           </span>
         </div>
 
