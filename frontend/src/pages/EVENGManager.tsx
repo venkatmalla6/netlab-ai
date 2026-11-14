@@ -138,6 +138,17 @@ export const EVENGManager: React.FC = () => {
     }
   }
 
+  const getLabWebUrl = (lab: any) => {
+    if (!eveHost) return '#'
+    const path = lab.path || (lab.file ? `/${lab.file}` : `/${lab.name}.unl`)
+    const cleanPath = path.startsWith('/') ? path : `/${path}`
+    const encodedPath = cleanPath
+      .split('/')
+      .map((seg: string) => encodeURIComponent(seg))
+      .join('/')
+    return `http://${eveHost}/legacy${encodedPath}/topology`
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -165,6 +176,14 @@ export const EVENGManager: React.FC = () => {
             <RefreshCw className="h-3.5 w-3.5" />
             Refresh
           </Button>
+          {eveHost && (
+            <a href={`http://${eveHost}`} target="_blank" rel="noopener noreferrer">
+              <Button variant="outline" size="sm" className="gap-1.5 text-xs text-indigo-300 border-slate-800 hover:border-indigo-500">
+                <ExternalLink className="h-3.5 w-3.5" />
+                EVE-NG Portal
+              </Button>
+            </a>
+          )}
         </div>
       </div>
 
@@ -311,8 +330,13 @@ export const EVENGManager: React.FC = () => {
                         <Square className="h-3.5 w-3.5 fill-current" /> Stop All
                       </Button>
                       {eveHost && (
-                        <a href={`http://${eveHost}`} target="_blank" rel="noopener noreferrer">
-                          <Button variant="outline" size="sm" className="gap-1.5 text-xs text-slate-300">
+                        <a
+                          href={getLabWebUrl(lab)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={`Open ${labName} in EVE-NG Web Console`}
+                        >
+                          <Button variant="outline" size="sm" className="gap-1.5 text-xs text-blue-300 border-slate-800 hover:border-blue-500 hover:bg-blue-950/20">
                             <ExternalLink className="h-3.5 w-3.5" /> Web Console
                           </Button>
                         </a>
