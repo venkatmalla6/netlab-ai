@@ -16,6 +16,7 @@ import {
   Plus,
   Trash2,
   AlertCircle,
+  ShieldCheck,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -186,6 +187,23 @@ export const ImageToTopology: React.FC = () => {
                   <span className="font-semibold text-white block mb-1">Architecture Summary</span>
                   <p className="text-slate-300 text-[11px] leading-relaxed whitespace-pre-line">{result.raw_analysis}</p>
                 </div>
+
+                {result.acl_requirements && result.acl_requirements.length > 0 && (
+                  <div className="rounded-lg bg-blue-950/20 p-3 border border-blue-900/40">
+                    <span className="font-semibold text-blue-300 flex items-center gap-1.5 mb-1.5">
+                      <ShieldCheck className="h-4 w-4 text-blue-400" />
+                      Extracted ACL & Configuration Requirements ({result.acl_requirements.length})
+                    </span>
+                    <ul className="space-y-1">
+                      {result.acl_requirements.map((req: string, idx: number) => (
+                        <li key={idx} className="text-[11px] text-slate-300 font-mono flex items-start gap-1.5">
+                          <span className="text-blue-400">›</span>
+                          <span>{req}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 <div>
                   <span className="font-semibold text-white block mb-1.5">Detected Devices ({result.nodes?.length || 0})</span>
