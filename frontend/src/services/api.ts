@@ -106,4 +106,29 @@ export const apiClient = {
   updateSettings: (data: any) => api.put('/settings', data).then((r) => r.data),
   getSettingsStatus: () => api.get('/settings/status').then((r) => r.data),
   getUser: () => api.get('/users/me').then((r) => r.data),
+
+  // Voice Agent & Whisper STT
+  getVoiceStatus: () => api.get('/voice/status').then((r) => r.data),
+  transcribeAudio: (audioBlob: Blob, filename = 'audio.webm') => {
+    const formData = new FormData()
+    formData.append('file', audioBlob, filename)
+    return api.post('/voice/stt', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data)
+  },
+  sendVoiceAgentTurn: (audioBlob?: Blob, textPrompt?: string, conversationId?: number) => {
+    const formData = new FormData()
+    if (audioBlob) {
+      formData.append('file', audioBlob, 'audio.webm')
+    }
+    if (textPrompt) {
+      formData.append('text_prompt', textPrompt)
+    }
+    if (conversationId) {
+      formData.append('conversation_id', conversationId.toString())
+    }
+    return api.post('/voice/agent-turn', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data)
+  },
 }
