@@ -130,8 +130,8 @@ export const TopologyBuilder: React.FC = () => {
             id: n.id || `node-${idx + 1}`,
             type: 'deviceNode',
             position: n.position || {
-              x: 100 + (idx % 3) * 280,
-              y: 100 + Math.floor(idx / 3) * 180,
+              x: 120 + (idx % 4) * 280,
+              y: 120 + Math.floor(idx / 4) * 220,
             },
             data: {
               label: n.id || n.name || `Device-${idx + 1}`,

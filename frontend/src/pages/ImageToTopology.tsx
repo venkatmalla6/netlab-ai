@@ -10,10 +10,17 @@ import {
   Network,
   Cpu,
   FileText,
+  Router,
+  Server,
+  Monitor,
+  Plus,
+  Trash2,
+  AlertCircle,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { apiClient } from '@/services/api'
 
 export const ImageToTopology: React.FC = () => {
   const navigate = useNavigate()
@@ -21,6 +28,8 @@ export const ImageToTopology: React.FC = () => {
   const [preview, setPreview] = useState<string | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [result, setResult] = useState<any>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [analysisStatus, setAnalysisStatus] = useState<string | null>(null)
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -28,49 +37,48 @@ export const ImageToTopology: React.FC = () => {
       setFile(selected)
       setPreview(URL.createObjectURL(selected))
       setResult(null)
+      setErrorMessage(null)
+    }
+  }
+
+  const getNodeIcon = (type: string) => {
+    switch (type?.toLowerCase()) {
+      case 'router':
+        return <Router className="h-3.5 w-3.5 text-blue-400" />
+      case 'switch':
+        return <Network className="h-3.5 w-3.5 text-emerald-400" />
+      case 'server':
+        return <Server className="h-3.5 w-3.5 text-purple-400" />
+      default:
+        return <Monitor className="h-3.5 w-3.5 text-amber-400" />
     }
   }
 
   const handleAnalyze = async () => {
     if (!file) return
     setIsAnalyzing(true)
+    setErrorMessage(null)
+    setAnalysisStatus('Uploading diagram to Multimodal Vision AI...')
 
     try {
       const formData = new FormData()
       formData.append('file', file)
 
-      const resp = await fetch('http://127.0.0.1:8000/api/v1/vision/analyze', {
-        method: 'POST',
-        body: formData,
+      setAnalysisStatus('Vision AI extracting routers, switches, subnets, links, and ACL requirements...')
+      const resp = await apiClient.api.post('/vision/analyze', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 90000,
       })
 
-      if (resp.ok) {
-        const data = await resp.json()
-        setResult(data)
+      if (resp.data) {
+        setResult(resp.data)
+        setAnalysisStatus(null)
       } else {
         throw new Error('Analysis failed')
       }
-    } catch {
-      // Mock successful extraction preview if backend vision is processing
-      setResult({
-        lab_name: 'Campus LAN & Transit Architecture',
-        confidence_score: 0.94,
-        nodes: [
-          { id: 'R1-Edge', type: 'router', vendor: 'cisco', platform: 'iosv', ip: '203.0.113.1/30' },
-          { id: 'SW1-Core', type: 'switch', vendor: 'cisco', platform: 'iosvl2', ip: '192.168.10.1/24' },
-          { id: 'SW2-Core', type: 'switch', vendor: 'cisco', platform: 'iosvl2', ip: '192.168.20.1/24' },
-          { id: 'Host-PC1', type: 'pc', vendor: 'generic', platform: 'vpcs', ip: '192.168.10.50/24' },
-          { id: 'Host-PC2', type: 'pc', vendor: 'generic', platform: 'vpcs', ip: '192.168.20.50/24' },
-        ],
-        links: [
-          { source: 'R1-Edge', source_interface: 'Gig0/0', target: 'SW1-Core', target_interface: 'Gig0/0' },
-          { source: 'R1-Edge', source_interface: 'Gig0/1', target: 'SW2-Core', target_interface: 'Gig0/0' },
-          { source: 'SW1-Core', source_interface: 'Gig0/1', target: 'Host-PC1', target_interface: 'eth0' },
-          { source: 'SW2-Core', source_interface: 'Gig0/1', target: 'Host-PC2', target_interface: 'eth0' },
-        ],
-        raw_analysis:
-          'Vision AI identified 1 Cisco Edge Router, 2 Distribution Switches with 802.1Q trunking, and 2 workstation endpoints across VLAN 10 and VLAN 20.',
-      })
+    } catch (err: any) {
+      setErrorMessage(err.response?.data?.detail || err.message || 'Vision AI analysis failed')
+      setAnalysisStatus(null)
     } finally {
       setIsAnalyzing(false)
     }
@@ -132,8 +140,15 @@ export const ImageToTopology: React.FC = () => {
               className="w-full gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 text-xs font-semibold"
             >
               <Sparkles className="h-4 w-4" />
-              {isAnalyzing ? 'Extracting Topology with Vision AI...' : 'Analyze & Extract Topology'}
+              {isAnalyzing ? (analysisStatus || 'Extracting Topology with Vision AI...') : 'Analyze & Extract Topology'}
             </Button>
+
+            {errorMessage && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-red-950/40 border border-red-800 text-red-300 text-xs">
+                <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                <span>{errorMessage}</span>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -143,9 +158,14 @@ export const ImageToTopology: React.FC = () => {
             <div className="flex items-center justify-between">
               <CardTitle className="text-base">Structured Extraction</CardTitle>
               {result && (
-                <Badge variant="success" className="text-xs">
-                  Confidence: {Math.round(result.confidence_score * 100)}%
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/30">
+                    {result.nodes?.length || 0} Devices • {result.links?.length || 0} Links
+                  </Badge>
+                  <Badge variant="outline" className="text-xs text-emerald-400 border-emerald-500/30">
+                    Confidence: {Math.round((result.confidence_score || 0.85) * 100)}%
+                  </Badge>
+                </div>
               )}
             </div>
             <CardDescription>Detected nodes, subnets, and interface interconnections</CardDescription>
@@ -164,36 +184,36 @@ export const ImageToTopology: React.FC = () => {
               <div className="space-y-4 text-xs">
                 <div className="rounded-lg bg-slate-950 p-3 border border-slate-800">
                   <span className="font-semibold text-white block mb-1">Architecture Summary</span>
-                  <p className="text-slate-300 text-[11px] leading-relaxed">{result.raw_analysis}</p>
+                  <p className="text-slate-300 text-[11px] leading-relaxed whitespace-pre-line">{result.raw_analysis}</p>
                 </div>
 
                 <div>
-                  <span className="font-semibold text-white block mb-1.5">Detected Devices ({result.nodes.length})</span>
-                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                    {result.nodes.map((node: any, idx: number) => (
+                  <span className="font-semibold text-white block mb-1.5">Detected Devices ({result.nodes?.length || 0})</span>
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                    {result.nodes?.map((node: any, idx: number) => (
                       <div
                         key={idx}
                         className="flex items-center justify-between p-2 rounded bg-slate-900 border border-slate-800/80"
                       >
                         <div className="flex items-center gap-2">
-                          <Cpu className="h-3.5 w-3.5 text-blue-400" />
-                          <span className="font-bold text-white">{node.id}</span>
-                          <span className="text-[10px] text-slate-400 uppercase">({node.type})</span>
+                          {getNodeIcon(node.type)}
+                          <span className="font-bold text-white">{node.id || node.name}</span>
+                          <span className="text-[10px] text-slate-400 uppercase">({node.type || 'device'})</span>
                         </div>
-                        <span className="font-mono text-[10px] text-emerald-400">{node.ip}</span>
+                        <span className="font-mono text-[10px] text-emerald-400">{node.ip || 'DHCP/Dynamic'}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
                 <div>
-                  <span className="font-semibold text-white block mb-1.5">Detected Links ({result.links.length})</span>
-                  <div className="space-y-1 max-h-32 overflow-y-auto pr-1 font-mono text-[11px] text-slate-300">
-                    {result.links.map((link: any, idx: number) => (
+                  <span className="font-semibold text-white block mb-1.5">Detected Links ({result.links?.length || 0})</span>
+                  <div className="space-y-1 max-h-36 overflow-y-auto pr-1 font-mono text-[11px] text-slate-300">
+                    {result.links?.map((link: any, idx: number) => (
                       <div key={idx} className="p-1.5 rounded bg-slate-900/60 border border-slate-800/60 flex items-center justify-between">
-                        <span>{link.source}:{link.source_interface}</span>
+                        <span>{link.source}:{link.source_interface || 'Gi0/0'}</span>
                         <span className="text-blue-400 text-xs">⟷</span>
-                        <span>{link.target}:{link.target_interface}</span>
+                        <span>{link.target}:{link.target_interface || 'Gi0/0'}</span>
                       </div>
                     ))}
                   </div>
@@ -204,10 +224,10 @@ export const ImageToTopology: React.FC = () => {
                     sessionStorage.setItem('imported_topology', JSON.stringify(result))
                     navigate('/topology')
                   }}
-                  className="w-full gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 text-xs font-semibold"
+                  className="w-full gap-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 text-xs font-semibold py-2.5"
                 >
                   <ArrowRight className="h-4 w-4" />
-                  Load into Visual Topology Builder
+                  Load into Visual Topology Builder ({result.nodes?.length || 0} Devices)
                 </Button>
               </div>
             )}
