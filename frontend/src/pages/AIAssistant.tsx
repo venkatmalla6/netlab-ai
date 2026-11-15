@@ -37,6 +37,59 @@ interface Message {
 
 type VoiceAgentState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking'
 
+// Pure PCM WAV encoder for optimal 16kHz mono audio sent to Groq Whisper
+function encodeWav16k(samples: Float32Array, inputSampleRate: number): Blob {
+  const targetSampleRate = 16000
+  const ratio = inputSampleRate / targetSampleRate
+  const newLength = Math.max(1, Math.round(samples.length / ratio))
+  const result = new Float32Array(newLength)
+  let offsetResult = 0
+  let offsetBuffer = 0
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio)
+    let accum = 0
+    let count = 0
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < samples.length; i++) {
+      accum += samples[i]
+      count++
+    }
+    result[offsetResult] = count > 0 ? accum / count : 0
+    offsetResult++
+    offsetBuffer = nextOffsetBuffer
+  }
+
+  const buffer = new ArrayBuffer(44 + result.length * 2)
+  const view = new DataView(buffer)
+
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i))
+    }
+  }
+
+  writeString(0, 'RIFF')
+  view.setUint32(4, 36 + result.length * 2, true)
+  writeString(8, 'WAVE')
+  writeString(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true) // PCM
+  view.setUint16(22, 1, true) // Mono
+  view.setUint32(24, targetSampleRate, true)
+  view.setUint32(28, targetSampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  writeString(36, 'data')
+  view.setUint32(40, result.length * 2, true)
+
+  let offset = 44
+  for (let i = 0; i < result.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, result[i]))
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true)
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' })
+}
+
 export const AIAssistant: React.FC = () => {
   const [searchParams] = useSearchParams()
   const initialQuery = searchParams.get('q') || ''
@@ -54,6 +107,8 @@ export const AIAssistant: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [autoSpeak, setAutoSpeak] = useState(false)
+  const [conversationId, setConversationId] = useState<number | null>(null)
+  const conversationIdRef = useRef<number | null>(null)
 
   // Voice Agent State
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false)
@@ -64,14 +119,16 @@ export const AIAssistant: React.FC = () => {
   const [voiceTranscript, setVoiceTranscript] = useState('')
   const [lastAgentReply, setLastAgentReply] = useState('')
 
+  const voiceTranscriptRef = useRef<string>('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
   const audioContextRef = useRef<AudioContext | null>(null)
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null)
+  const audioStreamRef = useRef<MediaStream | null>(null)
+  const audioChunksRef = useRef<Float32Array[]>([])
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animFrameRef = useRef<number | null>(null)
   const recognitionRef = useRef<any>(null)
-  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
+  const isRecordingActiveRef = useRef<boolean>(false)
 
   const quickPrompts = [
     'Explain OSPF neighbor states from Down to Full',
@@ -95,38 +152,49 @@ export const AIAssistant: React.FC = () => {
     }
   }, [])
 
-  // Web Speech Recognition for fallback / live feedback
+  // Web Speech Recognition for live preview & robust local transcription
   useEffect(() => {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition()
-      recognition.continuous = false
+      recognition.continuous = true
       recognition.interimResults = true
       recognition.lang = 'en-US'
 
       recognition.onresult = (event: any) => {
-        const transcript = Array.from(event.results)
-          .map((result: any) => result[0].transcript)
-          .join('')
-        if (transcript) {
-          setVoiceTranscript(transcript)
+        let transcript = ''
+        for (let i = 0; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript + ' '
+        }
+        const text = transcript.trim()
+        if (text) {
+          voiceTranscriptRef.current = text
+          setVoiceTranscript(text)
           if (!isVoiceModalOpen) {
-            setInput(transcript)
+            setInput(text)
           }
         }
       }
 
       recognition.onerror = (event: any) => {
-        console.warn('Speech recognition warning:', event.error)
+        console.warn('Speech recognition status:', event.error)
+      }
+
+      recognition.onend = () => {
+        if (isRecordingActiveRef.current) {
+          try {
+            recognition.start()
+          } catch {}
+        }
       }
 
       recognitionRef.current = recognition
     }
   }, [isVoiceModalOpen])
 
-  // Play subtle interface audio beeps
-  const playChime = (frequency: number, duration = 0.15, type: OscillatorType = 'sine') => {
+  // Play subtle feedback chimes
+  const playChime = (frequency: number, duration = 0.12, type: OscillatorType = 'sine') => {
     try {
       const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
       const osc = ctx.createOscillator()
@@ -139,46 +207,66 @@ export const AIAssistant: React.FC = () => {
       gain.connect(ctx.destination)
       osc.start()
       osc.stop(ctx.currentTime + duration)
-    } catch {
-      // AudioContext not allowed without gesture
-    }
+    } catch {}
   }
 
-  // Audio Visualizer setup
-  const startAudioVisualizer = (stream: MediaStream) => {
+  // Audio Visualizer
+  const setupAudioGraph = (stream: MediaStream) => {
     try {
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)()
       audioContextRef.current = audioCtx
+
+      const source = audioCtx.createMediaStreamSource(stream)
       const analyser = audioCtx.createAnalyser()
       analyser.fftSize = 64
       analyserRef.current = analyser
-
-      const source = audioCtx.createMediaStreamSource(stream)
       source.connect(analyser)
+
+      // PCM audio chunk collector for 16kHz WAV export to Groq Whisper
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+      audioProcessorRef.current = processor
+      audioChunksRef.current = []
+
+      processor.onaudioprocess = (e) => {
+        if (!isRecordingActiveRef.current) return
+        const channelData = e.inputBuffer.getChannelData(0)
+        audioChunksRef.current.push(new Float32Array(channelData))
+      }
+
+      source.connect(processor)
+      processor.connect(audioCtx.destination)
 
       const bufferLength = analyser.frequencyBinCount
       const dataArray = new Uint8Array(bufferLength)
 
       const updateLevel = () => {
+        if (!isRecordingActiveRef.current) return
         analyser.getByteFrequencyData(dataArray)
         let sum = 0
         for (let i = 0; i < bufferLength; i++) {
           sum += dataArray[i]
         }
-        const avg = sum / bufferLength
-        setAudioLevel(avg)
+        setAudioLevel(sum / bufferLength)
         animFrameRef.current = requestAnimationFrame(updateLevel)
       }
       updateLevel()
     } catch (e) {
-      console.warn('Audio visualizer setup failed:', e)
+      console.warn('Audio graph setup error:', e)
     }
   }
 
-  const stopAudioVisualizer = () => {
+  const stopAudioGraph = () => {
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current)
       animFrameRef.current = null
+    }
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect()
+      audioProcessorRef.current = null
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((track) => track.stop())
+      audioStreamRef.current = null
     }
     if (audioContextRef.current) {
       audioContextRef.current.close().catch(() => {})
@@ -187,95 +275,100 @@ export const AIAssistant: React.FC = () => {
     setAudioLevel(0)
   }
 
-  // Start Voice Recording (MediaRecorder + Whisper STT)
+  // Start Voice Recording
   const startVoiceRecording = async () => {
     try {
       window.speechSynthesis?.cancel()
+      setSpeakingMsgId(null)
+      voiceTranscriptRef.current = ''
       setVoiceTranscript('')
-      playChime(660, 0.12)
+      isRecordingActiveRef.current = true
+      playChime(660, 0.1)
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      startAudioVisualizer(stream)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      })
+      audioStreamRef.current = stream
+      setupAudioGraph(stream)
 
-      // Try browser SpeechRecognition in parallel for interim previews
       try {
         recognitionRef.current?.start()
       } catch {}
 
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
-
-      const recorder = new MediaRecorder(stream, { mimeType })
-      mediaRecorderRef.current = recorder
-      audioChunksRef.current = []
-
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          audioChunksRef.current.push(e.data)
-        }
-      }
-
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop())
-        stopAudioVisualizer()
-        try {
-          recognitionRef.current?.stop()
-        } catch {}
-
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType })
-        if (audioBlob.size > 500) {
-          await processVoiceInput(audioBlob)
-        } else if (voiceTranscript.trim()) {
-          await handleSend(voiceTranscript, true)
-        } else {
-          setVoiceAgentState('idle')
-        }
-      }
-
-      recorder.start(100)
       setVoiceAgentState('listening')
     } catch (err: any) {
-      console.error('Microphone access denied:', err)
-      alert('Microphone access was denied or is not supported. Please allow microphone permissions.')
+      console.error('Microphone error:', err)
+      alert('Microphone access was denied. Please allow microphone permissions in your browser.')
+      isRecordingActiveRef.current = false
       setVoiceAgentState('idle')
     }
   }
 
-  const stopVoiceRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      playChime(440, 0.12)
-      setVoiceAgentState('transcribing')
-      mediaRecorderRef.current.stop()
-    }
-  }
+  // Stop Voice Recording & Process
+  const stopVoiceRecording = async (shouldSubmit = true) => {
+    if (!isRecordingActiveRef.current) return
+    isRecordingActiveRef.current = false
+    playChime(440, 0.1)
 
-  // Process captured audio via Groq Whisper API
-  const processVoiceInput = async (audioBlob: Blob) => {
-    setVoiceAgentState('transcribing')
     try {
-      let transcribed = ''
+      recognitionRef.current?.stop()
+    } catch {}
+
+    const sampleRate = audioContextRef.current?.sampleRate || 44100
+    const capturedChunks = [...audioChunksRef.current]
+    stopAudioGraph()
+
+    if (!shouldSubmit) {
+      setVoiceAgentState('idle')
+      return
+    }
+
+    setVoiceAgentState('transcribing')
+
+    let recognizedText = ''
+
+    // 1. Try Groq Whisper with the 16kHz WAV buffer
+    if (capturedChunks.length > 0) {
       try {
-        const res = await apiClient.transcribeAudio(audioBlob, 'voice.webm')
-        transcribed = res.text?.trim()
-      } catch (sttErr) {
-        console.warn('Backend Groq Whisper failed, checking local transcript:', sttErr)
-        transcribed = voiceTranscript.trim()
-      }
+        let totalSamples = 0
+        capturedChunks.forEach((c) => (totalSamples += c.length))
+        const mergedSamples = new Float32Array(totalSamples)
+        let offset = 0
+        capturedChunks.forEach((c) => {
+          mergedSamples.set(c, offset)
+          offset += c.length
+        })
 
-      if (!transcribed && voiceTranscript.trim()) {
-        transcribed = voiceTranscript.trim()
+        // Check if there is enough audio duration (> 0.4 seconds)
+        if (totalSamples / sampleRate > 0.4) {
+          const wavBlob = encodeWav16k(mergedSamples, sampleRate)
+          const res = await apiClient.transcribeAudio(wavBlob, 'voice.wav')
+          if (res && res.text) {
+            recognizedText = res.text.trim()
+          }
+        }
+      } catch (err) {
+        console.warn('Groq Whisper transcribe error, falling back to local SpeechRecognition:', err)
       }
+    }
 
-      if (transcribed) {
-        setVoiceTranscript(transcribed)
-        setVoiceAgentState('thinking')
-        await handleSend(transcribed, true)
-      } else {
-        setVoiceAgentState('idle')
-      }
-    } catch (err: any) {
-      console.error('Error processing voice:', err)
+    // 2. Fallback to live SpeechRecognition if Whisper returned empty
+    if (!recognizedText && voiceTranscriptRef.current.trim()) {
+      recognizedText = voiceTranscriptRef.current.trim()
+    }
+
+    // 3. Clear transcript buffer to avoid replay loops
+    voiceTranscriptRef.current = ''
+
+    if (recognizedText) {
+      setVoiceTranscript(recognizedText)
+      setVoiceAgentState('thinking')
+      await handleSend(recognizedText, true)
+    } else {
       setVoiceAgentState('idle')
     }
   }
@@ -296,19 +389,17 @@ export const AIAssistant: React.FC = () => {
 
     window.speechSynthesis.cancel()
 
-    // Clean markdown code blocks and hashes for clearer spoken voice
+    // Clean markdown code blocks for spoken voice
     const cleanText = text
-      .replace(/```[\s\S]*?```/g, 'Configuration code provided.')
+      .replace(/```[\s\S]*?```/g, 'Configuration code provided below.')
       .replace(/[#*_`]/g, '')
       .replace(/\s+/g, ' ')
       .trim()
 
     const utterance = new SpeechSynthesisUtterance(cleanText)
-    speechUtteranceRef.current = utterance
     utterance.rate = 1.05
     utterance.pitch = 1.0
 
-    // Pick best English voice if available
     const voices = window.speechSynthesis.getVoices()
     const preferredVoice = voices.find(
       (v) => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('David'))
@@ -325,10 +416,9 @@ export const AIAssistant: React.FC = () => {
       setVoiceAgentState('idle')
       if (onDone) onDone()
       else if (isVoiceModalOpen && continuousMode) {
-        // Continuous Voice Agent: automatically listen for next query
         setTimeout(() => {
           startVoiceRecording()
-        }, 600)
+        }, 500)
       }
     }
 
@@ -348,8 +438,13 @@ export const AIAssistant: React.FC = () => {
 
   // Send Chat message
   const handleSend = async (textToSend?: string, isVoice = false) => {
-    const text = textToSend || input
-    if (!text.trim() || isLoading) return
+    const text = (textToSend || input).trim()
+    if (!text || isLoading) return
+
+    // Clear input & buffers immediately so the exact same question is never repeated
+    setInput('')
+    voiceTranscriptRef.current = ''
+    setVoiceTranscript('')
 
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -360,12 +455,16 @@ export const AIAssistant: React.FC = () => {
     }
 
     setMessages((prev) => [...prev, userMsg])
-    setInput('')
     setIsLoading(true)
     if (isVoice) setVoiceAgentState('thinking')
 
     try {
-      const resp = await apiClient.sendChat(text)
+      const resp = await apiClient.sendChat(text, conversationIdRef.current || undefined)
+      if (resp && resp.conversation_id) {
+        setConversationId(resp.conversation_id)
+        conversationIdRef.current = resp.conversation_id
+      }
+
       const replyContent = resp.message || 'I have analyzed your request.'
       const assistantMsgId = (Date.now() + 1).toString()
       const assistantMsg: Message = {
@@ -377,7 +476,7 @@ export const AIAssistant: React.FC = () => {
       setMessages((prev) => [...prev, assistantMsg])
       setLastAgentReply(replyContent)
 
-      // Spoken voice reply
+      // Auto read aloud if voice mode or autoSpeak enabled
       if (isVoice || autoSpeak || isVoiceModalOpen) {
         handleSpeak(assistantMsgId, replyContent)
       } else {
@@ -407,6 +506,10 @@ export const AIAssistant: React.FC = () => {
     window.speechSynthesis?.cancel()
     setSpeakingMsgId(null)
     setVoiceAgentState('idle')
+    setConversationId(null)
+    conversationIdRef.current = null
+    voiceTranscriptRef.current = ''
+    setVoiceTranscript('')
     setMessages([
       {
         id: Date.now().toString(),
@@ -419,11 +522,13 @@ export const AIAssistant: React.FC = () => {
 
   const openVoiceAgentModal = () => {
     setIsVoiceModalOpen(true)
+    voiceTranscriptRef.current = ''
+    setVoiceTranscript('')
     startVoiceRecording()
   }
 
   const closeVoiceAgentModal = () => {
-    stopVoiceRecording()
+    stopVoiceRecording(false)
     stopSpeaking()
     setIsVoiceModalOpen(false)
   }
@@ -493,7 +598,7 @@ export const AIAssistant: React.FC = () => {
           <div className="flex items-center justify-between text-[11px] text-slate-400">
             <span className="flex items-center gap-1.5">
               <Volume2 className="h-3.5 w-3.5 text-blue-400" />
-              Auto-Speak
+              Auto-Speak Replies
             </span>
             <input
               type="checkbox"
@@ -673,7 +778,7 @@ export const AIAssistant: React.FC = () => {
               size="icon"
               onClick={() => {
                 if (voiceAgentState === 'listening') {
-                  stopVoiceRecording()
+                  stopVoiceRecording(true)
                 } else {
                   startVoiceRecording()
                 }
@@ -777,7 +882,7 @@ export const AIAssistant: React.FC = () => {
               <div
                 onClick={() => {
                   if (voiceAgentState === 'listening') {
-                    stopVoiceRecording()
+                    stopVoiceRecording(true)
                   } else if (voiceAgentState === 'speaking') {
                     stopSpeaking()
                   } else {
@@ -914,7 +1019,7 @@ export const AIAssistant: React.FC = () => {
                 </Button>
               ) : voiceAgentState === 'listening' ? (
                 <Button
-                  onClick={stopVoiceRecording}
+                  onClick={() => stopVoiceRecording(true)}
                   size="sm"
                   className="bg-emerald-600 hover:bg-emerald-500 text-white gap-1.5 text-xs shadow-lg shadow-emerald-600/30"
                 >
