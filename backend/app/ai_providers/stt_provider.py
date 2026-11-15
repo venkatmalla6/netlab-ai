@@ -45,8 +45,9 @@ class STTProvider(AIProvider):
     async def transcribe(
         self,
         audio_data: bytes | str,
-        filename: str = "audio.webm",
-        content_type: str = "audio/webm",
+        filename: str = "audio.wav",
+        content_type: str = "audio/wav",
+        language: str = "en",
         model_size: str = "whisper-large-v3-turbo",
     ) -> str:
         """Transcribe audio to text via Groq Whisper API (primary) or local faster-whisper."""
@@ -60,10 +61,13 @@ class STTProvider(AIProvider):
                 content = audio_data if isinstance(audio_data, bytes) else open(audio_data, "rb").read()
 
                 # Infer proper file name and content type
-                ext = ".webm"
+                ext = ".wav"
                 if "wav" in content_type or filename.endswith(".wav"):
                     ext = ".wav"
                     content_type = "audio/wav"
+                elif "webm" in content_type or filename.endswith(".webm"):
+                    ext = ".webm"
+                    content_type = "audio/webm"
                 elif "mp3" in content_type or filename.endswith(".mp3"):
                     ext = ".mp3"
                     content_type = "audio/mp3"
@@ -74,12 +78,15 @@ class STTProvider(AIProvider):
                     ext = ".ogg"
                     content_type = "audio/ogg"
                 else:
-                    content_type = "audio/webm"
+                    content_type = "audio/wav"
 
                 upload_name = f"audio{ext}"
 
                 files = {"file": (upload_name, content, content_type)}
-                data = {"model": "whisper-large-v3-turbo"}
+                data = {
+                    "model": "whisper-large-v3-turbo",
+                    "language": language or "en",
+                }
 
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.post(
@@ -99,7 +106,7 @@ class STTProvider(AIProvider):
             from faster_whisper import WhisperModel
             if isinstance(audio_data, str):
                 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
-                segments, _info = whisper_model.transcribe(audio_data, beam_size=5)
+                segments, _info = whisper_model.transcribe(audio_data, beam_size=5, language=language or "en")
                 return " ".join(seg.text for seg in segments).strip()
         except Exception as exc:
             logger.info("Local faster-whisper fallback failed: %s", exc)

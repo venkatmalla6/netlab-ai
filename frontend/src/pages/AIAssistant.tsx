@@ -399,12 +399,15 @@ export const AIAssistant: React.FC = () => {
     const utterance = new SpeechSynthesisUtterance(cleanText)
     utterance.rate = 1.05
     utterance.pitch = 1.0
+    utterance.lang = 'en-US'
 
     const voices = window.speechSynthesis.getVoices()
-    const preferredVoice = voices.find(
-      (v) => v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('David'))
-    )
-    if (preferredVoice) utterance.voice = preferredVoice
+    const preferredVoice =
+      voices.find((v) => (v.lang === 'en-US' || v.lang === 'en_US') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('David') || v.name.includes('Jenny') || v.name.includes('Guy'))) ||
+      voices.find((v) => v.lang.startsWith('en'))
+    if (preferredVoice) {
+      utterance.voice = preferredVoice
+    }
 
     utterance.onstart = () => {
       setSpeakingMsgId(msgId)

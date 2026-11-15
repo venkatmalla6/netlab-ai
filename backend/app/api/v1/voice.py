@@ -55,18 +55,19 @@ async def voice_status():
 
 
 @router.post("/stt", response_model=STTResponse)
-async def speech_to_text(file: UploadFile = File(...)):
+async def speech_to_text(file: UploadFile = File(...), language: Optional[str] = Form("en")):
     """Transcribe an audio file using Groq Whisper Large v3 Turbo or faster-whisper."""
     try:
         content = await file.read()
-        filename = file.filename or "audio.webm"
-        content_type = file.content_type or "audio/webm"
+        filename = file.filename or "audio.wav"
+        content_type = file.content_type or "audio/wav"
         transcription = await stt_provider.transcribe(
             content,
             filename=filename,
             content_type=content_type,
+            language=language or "en",
         )
-        return STTResponse(success=True, text=transcription)
+        return STTResponse(success=True, text=transcription, language=language or "en")
     except Exception as e:
         logger.error("STT error: %s", e)
         raise HTTPException(status_code=500, detail=f"Speech recognition error: {e}")
@@ -77,6 +78,7 @@ async def voice_agent_turn(
     file: Optional[UploadFile] = File(None),
     text_prompt: Optional[str] = Form(None),
     conversation_id: Optional[int] = Form(None),
+    language: Optional[str] = Form("en"),
     db: AsyncSession = Depends(get_db),
 ):
     """End-to-end Voice Agent Turn: Audio in -> Whisper STT -> Copilot LLM -> Spoken Reply out."""
@@ -84,12 +86,13 @@ async def voice_agent_turn(
     if file:
         try:
             content = await file.read()
-            filename = file.filename or "audio.webm"
-            content_type = file.content_type or "audio/webm"
+            filename = file.filename or "audio.wav"
+            content_type = file.content_type or "audio/wav"
             transcribed_text = await stt_provider.transcribe(
                 content,
                 filename=filename,
                 content_type=content_type,
+                language=language or "en",
             )
         except Exception as e:
             logger.error("Voice agent STT error: %s", e)
