@@ -13,6 +13,9 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Fallback models on Groq if primary model hits rate limit (429) or token quotas
+FALLBACK_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+
 
 class GroqProvider(AIProvider):
     """Groq cloud provider using the OpenAI-compatible chat completions API."""
@@ -81,10 +84,19 @@ class GroqProvider(AIProvider):
                 "Set GROQ_API_KEY in your .env file to use the Groq provider."
             )
 
+        # On Groq on-demand tier, expected tokens default to 2048 which exceeds the 1000 OTPM ceiling.
+        # Cap max_tokens at 800 by default to prevent HTTP 429 rate limit exceeded.
+        raw_max_tokens = kwargs.pop("max_tokens", 800)
+        try:
+            max_tokens = min(int(raw_max_tokens), 800)
+        except (ValueError, TypeError):
+            max_tokens = 800
+
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": stream,
+            "max_tokens": max_tokens,
             **kwargs,
         }
 
@@ -101,41 +113,103 @@ class GroqProvider(AIProvider):
         }
 
     async def _complete_chat(self, payload: Dict[str, Any]) -> str:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{self._base_url}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            if resp.status_code != 200:
-                body = resp.text
-                logger.error("Groq API error %s: %s", resp.status_code, body)
-                raise RuntimeError(f"Groq API error ({resp.status_code}): {body}")
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        models_to_try = [payload.get("model", self._default_model)]
+        for fb in FALLBACK_MODELS:
+            if fb not in models_to_try:
+                models_to_try.append(fb)
+
+        last_err: Optional[Exception] = None
+        for m in models_to_try:
+            current_payload = dict(payload)
+            current_payload["model"] = m
+            # If falling back due to previous throttling, safe-clamp max_tokens
+            if m != payload.get("model"):
+                current_payload["max_tokens"] = min(int(current_payload.get("max_tokens", 500)), 500)
+
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(
+                        f"{self._base_url}/chat/completions",
+                        headers=self._headers(),
+                        json=current_payload,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        msg = data["choices"][0]["message"]
+                        return msg.get("content") or msg.get("reasoning") or ""
+
+                    body = resp.text
+                    logger.warning("Groq API model %s error %s: %s", m, resp.status_code, body)
+                    # If 429 rate limit or token limit, try next fallback model
+                    if resp.status_code in (429, 413) or "rate_limit" in body.lower() or "otpm" in body.lower():
+                        last_err = RuntimeError(f"Groq API error ({resp.status_code}): {body}")
+                        continue
+                    else:
+                        raise RuntimeError(f"Groq API error ({resp.status_code}): {body}")
+            except Exception as exc:
+                last_err = exc
+                logger.warning("Groq attempt with model %s failed: %s", m, exc)
+                continue
+
+        if last_err:
+            raise last_err
+        raise RuntimeError("Groq completion failed with all available models")
 
     async def _stream_chat(self, payload: Dict[str, Any]) -> AsyncIterator[str]:
+        models_to_try = [payload.get("model", self._default_model)]
+        for fb in FALLBACK_MODELS:
+            if fb not in models_to_try:
+                models_to_try.append(fb)
+
         async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
-                "POST",
-                f"{self._base_url}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            ) as resp:
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    raise RuntimeError(f"Groq API error ({resp.status_code}): {body.decode()}")
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        delta = chunk["choices"][0].get("delta", {})
-                        content = delta.get("content")
-                        if content:
-                            yield content
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        continue
+            stream_started = False
+            last_err: Optional[Exception] = None
+            for m in models_to_try:
+                current_payload = dict(payload)
+                current_payload["model"] = m
+                if m != payload.get("model"):
+                    current_payload["max_tokens"] = min(int(current_payload.get("max_tokens", 500)), 500)
+
+                try:
+                    async with client.stream(
+                        "POST",
+                        f"{self._base_url}/chat/completions",
+                        headers=self._headers(),
+                        json=current_payload,
+                    ) as resp:
+                        if resp.status_code == 200:
+                            async for line in resp.aiter_lines():
+                                if not line.startswith("data: "):
+                                    continue
+                                data_str = line[6:]
+                                if data_str.strip() == "[DONE]":
+                                    break
+                                try:
+                                    chunk = json.loads(data_str)
+                                    delta = chunk["choices"][0].get("delta", {})
+                                    content = delta.get("content") or delta.get("reasoning")
+                                    if content:
+                                        stream_started = True
+                                        yield content
+                                except (json.JSONDecodeError, KeyError, IndexError):
+                                    continue
+                            return
+                        else:
+                            body = await resp.aread()
+                            body_text = body.decode()
+                            logger.warning("Groq stream model %s returned %s: %s", m, resp.status_code, body_text)
+                            if resp.status_code in (429, 413) or "rate_limit" in body_text.lower() or "otpm" in body_text.lower():
+                                last_err = RuntimeError(f"Groq API error ({resp.status_code}): {body_text}")
+                                continue
+                            raise RuntimeError(f"Groq API error ({resp.status_code}): {body_text}")
+                except Exception as exc:
+                    if stream_started:
+                        # Already emitted chunks to client, don't restart stream midway
+                        raise
+                    last_err = exc
+                    logger.warning("Groq stream attempt with %s failed: %s", m, exc)
+                    continue
+
+            if last_err:
+                raise last_err
+            raise RuntimeError("Groq stream completion failed with all available models")

@@ -67,6 +67,7 @@ class VisionProvider(AIProvider):
                 payload = {
                     "model": target_model,
                     "messages": messages,
+                    "max_tokens": min(int(kwargs.get("max_tokens", 800)), 800),
                     "temperature": kwargs.get("temperature", 0.1),
                 }
                 async with httpx.AsyncClient(timeout=45.0) as client:
