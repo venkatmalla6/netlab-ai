@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Server,
   Play,
@@ -12,6 +13,7 @@ import {
   Layers,
   Activity,
   Cpu,
+  Eye,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,6 +22,7 @@ import { Input } from '@/components/ui/input'
 import { apiClient } from '@/services/api'
 
 export const EVENGManager: React.FC = () => {
+  const navigate = useNavigate()
   const [eveHost, setEveHost] = useState('')
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('eve')
@@ -138,6 +141,26 @@ export const EVENGManager: React.FC = () => {
     }
   }
 
+  const handleOpenInCanvas = async (lab: any) => {
+    const path = lab.path || (lab.file ? `/${lab.file}` : `/${lab.name}.unl`)
+    const cleanPath = path.startsWith('/') ? path.substring(1) : path
+    const labName = lab.name || lab.filename || 'EVE-NG Lab'
+    setActionStatus(`Loading ${labName} topology from hypervisor...`)
+    try {
+      const resp = await apiClient.api.get(`/eve-ng/labs/${encodeURIComponent(cleanPath)}/visualize`)
+      if (resp.data) {
+        sessionStorage.setItem('imported_topology', JSON.stringify(resp.data))
+        setActionStatus(`Loaded ${resp.data.nodes?.length || 0} devices from ${labName}. Opening Visual Canvas...`)
+        setTimeout(() => {
+          navigate('/topology')
+        }, 300)
+      }
+    } catch (err: any) {
+      setActionStatus(`Failed to load topology: ${err.message}`)
+      setTimeout(() => setActionStatus(null), 3500)
+    }
+  }
+
   const getLabWebUrl = (lab: any) => {
     if (!eveHost) return '#'
     const path = lab.path || (lab.file ? `/${lab.file}` : `/${lab.name}.unl`)
@@ -146,7 +169,8 @@ export const EVENGManager: React.FC = () => {
       .split('/')
       .map((seg: string) => encodeURIComponent(seg))
       .join('/')
-    return `http://${eveHost}/legacy${encodedPath}/topology`
+    // Session-priming launcher sets active lab before opening legacy topology
+    return `http://127.0.0.1:8000/api/v1/eve-ng/labs${encodedPath}/open-console`
   }
 
   return (
@@ -328,6 +352,15 @@ export const EVENGManager: React.FC = () => {
                         className="gap-1.5 text-xs text-red-400 border-slate-800 hover:border-red-500 hover:bg-red-950/20"
                       >
                         <Square className="h-3.5 w-3.5 fill-current" /> Stop All
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleOpenInCanvas(lab)}
+                        className="gap-1.5 text-xs text-indigo-400 border-slate-800 hover:border-indigo-500 hover:bg-indigo-950/20"
+                        title={`Import and view ${labName} in NETLAB AI Interactive Canvas`}
+                      >
+                        <Eye className="h-3.5 w-3.5" /> Visual Canvas
                       </Button>
                       {eveHost && (
                         <a

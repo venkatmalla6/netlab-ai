@@ -96,6 +96,10 @@ class EVENGClient:
         clean_path = lab_path.lstrip("/")
         return await self._get(f"/labs/{clean_path}/nodes") or {}
 
+    async def get_lab_topology(self, lab_path: str) -> Any:
+        clean_path = lab_path.lstrip("/")
+        return await self._get(f"/labs/{clean_path}/topology") or []
+
     async def add_node(
         self,
         lab_path: str,
