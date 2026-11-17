@@ -216,6 +216,13 @@ export const ChatPage: React.FC = () => {
   const voiceTranscriptRef = useRef<string>('')
   const silenceTimerRef = useRef<any>(null)
   const hasSpokenRef = useRef<boolean>(false)
+  const isSpeakingCanceledRef = useRef<boolean>(false)
+  const voiceAgentStateRef = useRef<VoiceAgentState>('idle')
+
+  const updateVoiceState = (state: VoiceAgentState) => {
+    voiceAgentStateRef.current = state
+    setVoiceAgentState(state)
+  }
 
   /* ── auto-scroll ── */
   useEffect(() => {
@@ -285,7 +292,10 @@ export const ChatPage: React.FC = () => {
 
   /* ── speak text via Web Speech API ── */
   const speak = useCallback((text: string, onDone?: () => void) => {
-    if (!('speechSynthesis' in window)) return
+    if (!('speechSynthesis' in window)) {
+      onDone?.()
+      return
+    }
     const clean = text
       .replace(/```[\s\S]*?```/g, 'Configuration code provided.')
       .replace(/[*#_`]/g, '')
@@ -296,7 +306,13 @@ export const ChatPage: React.FC = () => {
       return
     }
 
-    window.speechSynthesis.cancel()
+    isSpeakingCanceledRef.current = false
+
+    try {
+      window.speechSynthesis.pause()
+      window.speechSynthesis.cancel()
+    } catch {}
+
     const utter = new SpeechSynthesisUtterance(clean.slice(0, 900))
     utter.lang = 'en-US'
     utter.rate = 1.05
@@ -308,12 +324,21 @@ export const ChatPage: React.FC = () => {
     if (preferredVoice) utter.voice = preferredVoice
 
     utter.onstart = () => {
-      setVoiceAgentState('speaking')
+      if (isSpeakingCanceledRef.current) {
+        try { window.speechSynthesis.cancel() } catch {}
+        return
+      }
+      updateVoiceState('speaking')
     }
     utter.onend = () => {
+      if (isSpeakingCanceledRef.current) return
+      updateVoiceState('idle')
       onDone?.()
     }
-    utter.onerror = () => {
+    utter.onerror = (e: any) => {
+      if (isSpeakingCanceledRef.current) return
+      if (e?.error === 'canceled' || e?.error === 'interrupted') return
+      updateVoiceState('idle')
       onDone?.()
     }
 
@@ -386,16 +411,18 @@ export const ChatPage: React.FC = () => {
 
       if (isVoice) {
         setLastAgentReply(reply)
-        setVoiceAgentState('speaking')
+        updateVoiceState('speaking')
         speak(reply, () => {
-          // Continuous conversational loop: listen again when AI finishes speaking
+          if (isSpeakingCanceledRef.current) return
           if (isVoiceModeOpen) {
-            setVoiceAgentState('idle')
+            updateVoiceState('idle')
             setTimeout(() => {
-              startVoiceRecording()
-            }, 400)
+              if (isVoiceModeOpen && !isSpeakingCanceledRef.current) {
+                startVoiceRecording()
+              }
+            }, 300)
           } else {
-            setVoiceAgentState('idle')
+            updateVoiceState('idle')
           }
         })
       } else if (ttsEnabled) {
@@ -492,20 +519,20 @@ export const ChatPage: React.FC = () => {
         const currentAvg = sum / bufferLength
         setAudioLevel(currentAvg)
 
-        // Hands-Free Silence Detection (VAD)
-        if (currentAvg > 16) {
+        // High-sensitivity audio level detection
+        if (currentAvg > 4) {
           hasSpokenRef.current = true
           if (silenceTimerRef.current) {
             clearTimeout(silenceTimerRef.current)
             silenceTimerRef.current = null
           }
-        } else if (hasSpokenRef.current && currentAvg <= 14) {
+        } else if (hasSpokenRef.current && currentAvg <= 3) {
           if (!silenceTimerRef.current) {
             silenceTimerRef.current = setTimeout(() => {
               if (isRecordingActiveRef.current && hasSpokenRef.current) {
                 stopVoiceRecording(true)
               }
-            }, 1400) // 1.4s natural conversational pause
+            }, 1200) // 1.2s silence auto-submit
           }
         }
 
@@ -544,7 +571,12 @@ export const ChatPage: React.FC = () => {
 
   const startVoiceRecording = async () => {
     try {
-      window.speechSynthesis?.cancel()
+      isSpeakingCanceledRef.current = true
+      try {
+        window.speechSynthesis?.pause()
+        window.speechSynthesis?.cancel()
+      } catch {}
+
       voiceTranscriptRef.current = ''
       setVoiceTranscript('')
       isRecordingActiveRef.current = true
@@ -561,7 +593,7 @@ export const ChatPage: React.FC = () => {
       audioStreamRef.current = stream
       setupAudioGraph(stream)
 
-      // Optional local Web Speech Recognition for instant captions
+      // Web Speech Recognition for real-time captions & speech detection
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
       if (SpeechRecognition) {
         try {
@@ -569,7 +601,14 @@ export const ChatPage: React.FC = () => {
           rec.continuous = true
           rec.interimResults = true
           rec.lang = 'en-US'
+
           rec.onresult = (event: any) => {
+            // Voice Interrupt (Barge-in): if AI is speaking and user talks, interrupt immediately!
+            if (voiceAgentStateRef.current === 'speaking') {
+              interruptSpeech()
+              return
+            }
+
             let tr = ''
             for (let i = 0; i < event.results.length; i++) {
               tr += event.results[i][0].transcript + ' '
@@ -578,19 +617,49 @@ export const ChatPage: React.FC = () => {
             if (t) {
               voiceTranscriptRef.current = t
               setVoiceTranscript(t)
+              hasSpokenRef.current = true
+
+              // Reset silence timer on every speech event
+              if (silenceTimerRef.current) {
+                clearTimeout(silenceTimerRef.current)
+                silenceTimerRef.current = null
+              }
+
+              // Automatically submit 1.2s after user finishes speaking
+              silenceTimerRef.current = setTimeout(() => {
+                if (isRecordingActiveRef.current && hasSpokenRef.current) {
+                  stopVoiceRecording(true)
+                }
+              }, 1200)
             }
           }
+
+          rec.onspeechend = () => {
+            if (hasSpokenRef.current && isRecordingActiveRef.current) {
+              if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+              silenceTimerRef.current = setTimeout(() => {
+                if (isRecordingActiveRef.current && hasSpokenRef.current) {
+                  stopVoiceRecording(true)
+                }
+              }, 600)
+            }
+          }
+
+          rec.onerror = (event: any) => {
+            console.warn('SpeechRecognition error:', event?.error)
+          }
+
           rec.start()
           recognitionRef.current = rec
         } catch {}
       }
 
-      setVoiceAgentState('listening')
+      updateVoiceState('listening')
     } catch (err: any) {
       console.error('Microphone error:', err)
       alert('Microphone access was denied. Please allow microphone permissions in your browser.')
       isRecordingActiveRef.current = false
-      setVoiceAgentState('idle')
+      updateVoiceState('idle')
     }
   }
 
@@ -608,11 +677,11 @@ export const ChatPage: React.FC = () => {
     stopAudioGraph()
 
     if (!shouldSubmit) {
-      setVoiceAgentState('idle')
+      updateVoiceState('idle')
       return
     }
 
-    setVoiceAgentState('transcribing')
+    updateVoiceState('transcribing')
 
     let recognizedText = ''
 
@@ -649,12 +718,12 @@ export const ChatPage: React.FC = () => {
 
     if (recognizedText) {
       setVoiceTranscript(recognizedText)
-      setVoiceAgentState('thinking')
+      updateVoiceState('thinking')
       await sendMessage(recognizedText, true)
     } else {
-      setVoiceAgentState('idle')
+      updateVoiceState('idle')
       if (isVoiceModeOpen) {
-        setTimeout(() => startVoiceRecording(), 500)
+        setTimeout(() => startVoiceRecording(), 400)
       }
     }
   }
@@ -666,10 +735,14 @@ export const ChatPage: React.FC = () => {
   }
 
   const closeVoiceMode = () => {
-    window.speechSynthesis?.cancel()
+    isSpeakingCanceledRef.current = true
+    try {
+      window.speechSynthesis?.pause()
+      window.speechSynthesis?.cancel()
+    } catch {}
     stopAudioGraph()
     isRecordingActiveRef.current = false
-    setVoiceAgentState('idle')
+    updateVoiceState('idle')
     setIsVoiceModeOpen(false)
   }
 
@@ -684,9 +757,21 @@ export const ChatPage: React.FC = () => {
   }
 
   const interruptSpeech = () => {
-    window.speechSynthesis?.cancel()
-    setVoiceAgentState('idle')
-    setTimeout(() => startVoiceRecording(), 200)
+    isSpeakingCanceledRef.current = true
+    try {
+      window.speechSynthesis?.pause()
+      window.speechSynthesis?.cancel()
+    } catch {}
+    updateVoiceState('idle')
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+    setTimeout(() => {
+      if (isVoiceModeOpen) {
+        startVoiceRecording()
+      }
+    }, 150)
   }
 
   /* ── keyboard ── */
@@ -1305,6 +1390,11 @@ export const ChatPage: React.FC = () => {
          ══════════════════════════════════════════════════════════════ */}
       {isVoiceModeOpen && (
         <div
+          onClick={() => {
+            if (voiceAgentState === 'speaking') {
+              interruptSpeech()
+            }
+          }}
           style={{
             position: 'fixed',
             inset: 0,
@@ -1317,6 +1407,7 @@ export const ChatPage: React.FC = () => {
             alignItems: 'center',
             padding: '24px 20px',
             color: '#fff',
+            cursor: voiceAgentState === 'speaking' ? 'pointer' : 'default',
             animation: 'fadeIn 0.25s ease-out',
           }}
         >
@@ -1494,7 +1585,10 @@ export const ChatPage: React.FC = () => {
                   <span style={{ color: '#f59e0b' }}>Thinking...</span>
                 )}
                 {voiceAgentState === 'speaking' && (
-                  <span style={{ color: '#a5b4fc' }}>NETLAB AI Speaking (Tap orb to interrupt)</span>
+                  <span style={{ color: '#f87171', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#ef4444', animation: 'pulse 1s infinite' }} />
+                    Speaking... (Tap anywhere to interrupt)
+                  </span>
                 )}
                 {voiceAgentState === 'idle' && (
                   <span style={{ color: '#94a3b8' }}>Tap orb to talk</span>
