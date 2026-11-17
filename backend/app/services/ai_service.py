@@ -112,9 +112,10 @@ class AIService:
             return self._stream_and_save(db, session, history, model, provider)
 
         try:
-            response_text = await ai_manager.chat(
+            raw_response = await ai_manager.chat(
                 messages=history, model=model, stream=False, provider=provider
             )
+            response_text = raw_response if isinstance(raw_response, str) else str(raw_response)
         except RuntimeError as exc:
             response_text = f"⚠️ AI Error: {exc}"
 
