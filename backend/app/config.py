@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # ── Groq (primary cloud AI) ──────────────────────────────
     GROQ_API_KEY: Optional[str] = None
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
-    GROQ_MODEL: str = "qwen/qwen3.8-27b"
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
 
     # ── Ollama (local AI) ────────────────────────────────────
     OLLAMA_BASE_URL: str = "http://localhost:11434"

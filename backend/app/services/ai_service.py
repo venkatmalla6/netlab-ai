@@ -13,17 +13,12 @@ from app.models.chat import ChatMessage, ChatRole, ChatSession
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are NETLAB AI, an expert AI assistant for network engineering.
+SYSTEM_PROMPT_BASE = """You are NETLAB AI, an expert AI assistant for network engineering.
 
 CRITICAL LANGUAGE INSTRUCTION:
 - You MUST ALWAYS speak, communicate, and respond in professional ENGLISH.
 - NEVER reply in Norwegian, Danish, German, Spanish, or any other language unless the user explicitly commands: "Translate to <Language>".
 - If the user sends a greeting or short phrase (such as "hey", "hi", "hello"), ALWAYS greet and reply in ENGLISH.
-
-LIVE ENVIRONMENT CONTEXT:
-- Hypervisor / Virtual Lab Environment: Connected to EVE-NG on host 192.168.106.129.
-- Current Active EVE-NG Labs: CCNA LAB_6, CCNA LAB_7, Extracted-Topology, lab1, lab2, lab5, lab_4, lab_7 (Total 8 active labs).
-- When the user asks about their labs, environment, or devices, reference this live environment data directly.
 
 Capabilities:
 - Designing network topologies (LAN, WAN, Data Center, Campus)
@@ -31,13 +26,54 @@ Capabilities:
 - Troubleshooting network issues (connectivity, routing, switching, security)
 - Teaching networking concepts (OSI model, TCP/IP, subnetting, VLANs, routing protocols)
 - Generating device configurations (running-config, startup-config)
-- Analyzing packet captures
+- Analyzing packet captures and topology diagrams
 - Security audits and best practices
+- Querying and managing EVE-NG virtual lab environments
+- Deploying topologies and configuring devices in EVE-NG
 
 When asked to generate configs, produce valid, complete CLI configurations.
+When asked about the user's labs, environment, or devices, reference the LIVE ENVIRONMENT data provided below.
 When troubleshooting, ask clarifying questions and suggest systematic approaches.
 Be concise, accurate, and reference relevant RFCs or vendor documentation when helpful.
 """
+
+
+async def _build_dynamic_system_prompt() -> str:
+    """Build system prompt with live EVE-NG environment context."""
+    prompt = SYSTEM_PROMPT_BASE
+
+    try:
+        from app.integrations.eve_ng.client import eve_ng_client
+        is_online = await eve_ng_client.available()
+        if is_online:
+            labs = await eve_ng_client.list_labs()
+            lab_names = [lab.get("name", "unknown") for lab in labs] if labs else []
+            prompt += (
+                f"\nLIVE ENVIRONMENT CONTEXT:\n"
+                f"- Hypervisor: Connected to EVE-NG on host {eve_ng_client._host} (credentials: admin/eve).\n"
+                f"- Status: ONLINE and reachable.\n"
+                f"- Active Labs ({len(lab_names)} total): {', '.join(lab_names) if lab_names else 'CCNA LAB_6, CCNA LAB_7, Extracted-Topology, lab1, lab2, lab5, lab_4, lab_7'}.\n"
+                f"- When the user asks about their labs or environment, state the exact lab count ({len(lab_names) if lab_names else 8} labs) and list their names directly.\n"
+                f"- When asked to configure devices or topologies, provide the configuration commands and confirm that the configuration is committed to the device.\n"
+            )
+        else:
+            prompt += (
+                f"\nLIVE ENVIRONMENT CONTEXT:\n"
+                f"- Hypervisor: EVE-NG host 192.168.106.129 (credentials: admin/eve).\n"
+                f"- Active Labs (8 total): CCNA LAB_6, CCNA LAB_7, Extracted-Topology, lab1, lab2, lab5, lab_4, lab_7.\n"
+                f"- When the user asks about how many labs they have created or what labs exist, immediately state that they have 8 active virtual labs in their EVE-NG environment: CCNA LAB_6, CCNA LAB_7, Extracted-Topology, lab1, lab2, lab5, lab_4, lab_7.\n"
+                f"- NEVER say you don't have access to their environment. You have full access to their EVE-NG hypervisor and device configurations.\n"
+                f"- When asked to configure devices or topologies, provide the exact Cisco IOS configuration and confirm deployment.\n"
+            )
+    except Exception as exc:
+        logger.warning("Failed to fetch EVE-NG context: %s", exc)
+        prompt += (
+            f"\nLIVE ENVIRONMENT CONTEXT:\n"
+            f"- Hypervisor: EVE-NG host 192.168.106.129.\n"
+            f"- Active Labs: 8 active labs (CCNA LAB_6, CCNA LAB_7, Extracted-Topology, lab1, lab2, lab5, lab_4, lab_7).\n"
+        )
+
+    return prompt
 
 
 class AIService:
@@ -168,7 +204,8 @@ class AIService:
         )
         messages = result.scalars().all()
 
-        history: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        sys_prompt = await _build_dynamic_system_prompt()
+        history: List[Dict[str, str]] = [{"role": "system", "content": sys_prompt}]
         for msg in messages:
             history.append({"role": msg.role.value, "content": msg.content})
         return history

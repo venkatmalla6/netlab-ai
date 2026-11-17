@@ -14,7 +14,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Fallback models on Groq if primary model hits rate limit (429) or token quotas
-FALLBACK_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+FALLBACK_MODELS = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
 
 
 class GroqProvider(AIProvider):
@@ -97,6 +97,7 @@ class GroqProvider(AIProvider):
             "messages": messages,
             "stream": stream,
             "max_tokens": max_tokens,
+            "reasoning_effort": kwargs.pop("reasoning_effort", "low"),
             **kwargs,
         }
 
@@ -136,7 +137,10 @@ class GroqProvider(AIProvider):
                     if resp.status_code == 200:
                         data = resp.json()
                         msg = data["choices"][0]["message"]
-                        return msg.get("content") or msg.get("reasoning") or ""
+                        content = (msg.get("content") or "").strip()
+                        if content:
+                            return content
+                        return msg.get("reasoning") or ""
 
                     body = resp.text
                     logger.warning("Groq API model %s error %s: %s", m, resp.status_code, body)

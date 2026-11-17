@@ -26,6 +26,15 @@ export const apiClient = {
   // AI Chat
   sendChat: (message: string, conversation_id?: number, model?: string) =>
     api.post('/ai/chat', { message, conversation_id, model, stream: false }).then((r) => r.data),
+  sendChatWithImage: (file: Blob | File, message?: string, conversation_id?: number) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (message) formData.append('message', message)
+    if (conversation_id) formData.append('conversation_id', conversation_id.toString())
+    return api.post('/ai/chat-with-image', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then((r) => r.data)
+  },
   getConversations: () => api.get('/ai/conversations').then((r) => r.data),
   getMessages: (sessionId: number) => api.get(`/ai/conversations/${sessionId}`).then((r) => r.data),
 

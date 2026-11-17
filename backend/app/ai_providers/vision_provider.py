@@ -78,7 +78,8 @@ class VisionProvider(AIProvider):
                     )
                     if resp.status_code == 200:
                         data = resp.json()
-                        return data["choices"][0]["message"]["content"]
+                        msg = data["choices"][0]["message"]
+                        return (msg.get("content") or "").strip() or msg.get("reasoning") or ""
                     else:
                         logger.warning("Groq Vision API returned %s: %s", resp.status_code, resp.text)
             except Exception as exc:

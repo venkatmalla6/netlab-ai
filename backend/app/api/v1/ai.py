@@ -1,12 +1,13 @@
-"""AI chat endpoints – POST /chat, GET /conversations, etc."""
+"""AI chat endpoints – POST /chat, GET /conversations, chat-with-image, etc."""
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import List, Optional
+import re
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -21,10 +22,14 @@ from app.schemas.ai import (
     ConversationMessagesResponse,
 )
 from app.services.ai_service import ai_service
+from app.ai_providers.vision_provider import VisionProvider
+from app.integrations.eve_ng.client import eve_ng_client
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai", tags=["AI Chat"])
+
+vision_provider = VisionProvider()
 
 
 @router.post("/chat", response_model=None)
@@ -284,3 +289,112 @@ async def investigate_network_incident(req: CopilotInvestigateRequest, db: Async
         verification_outcome="SUCCESS – Network fabric operational and verified.",
         confidence_score=0.96,
     )
+
+
+
+# ── Chat with Image endpoint ─────────────────────────────────────
+
+@router.post("/chat-with-image")
+async def chat_with_image(
+    file: UploadFile = File(...),
+    message: Optional[str] = Form(None),
+    conversation_id: Optional[int] = Form(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload an image (network diagram) + optional text message.
+
+    The image is analyzed via the vision provider to extract topology,
+    then the extraction + user message are sent to the LLM for a rich response.
+    """
+    if not (file.content_type and file.content_type.startswith("image/")):
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+
+    content = await file.read()
+    mime_type = file.content_type or "image/png"
+    user_text = (message or "").strip() or "Analyze this network diagram and describe the topology."
+
+    # 1. Vision analysis – extract topology
+    topology_data: Optional[Dict[str, Any]] = None
+    vision_text = ""
+    try:
+        analysis_prompt = (
+            "You are an expert automated network topology vision analyzer. "
+            "Analyze this network diagram thoroughly. "
+            "Extract every device (routers, switches, hosts, servers) and every link with interfaces. "
+            "Respond ONLY with a strictly valid JSON codeblock enclosed in ```json and ``` with keys: "
+            '"lab_name", "summary", "nodes" (array of {id, name, type, vendor, platform, ip}), '
+            '"links" (array of {source, source_interface, target, target_interface}).'
+        )
+        vision_text = await vision_provider.analyze_image(content, prompt=analysis_prompt, mime_type=mime_type)
+
+        # Parse JSON from response
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", vision_text, re.DOTALL)
+        if json_match:
+            topology_data = json.loads(json_match.group(1))
+        elif vision_text.strip().startswith("{"):
+            bare_match = re.search(r"(\{[\s\S]*\})", vision_text)
+            if bare_match:
+                topology_data = json.loads(bare_match.group(1))
+    except Exception as exc:
+        logger.warning("Vision analysis in chat-with-image failed: %s", exc)
+        vision_text = f"(Vision analysis unavailable: {exc})"
+
+    # Auto-deployment to EVE-NG if topology detected
+    deployment_result: Optional[Dict[str, Any]] = None
+    if topology_data and (topology_data.get("nodes") or topology_data.get("devices")):
+        try:
+            lab_name = topology_data.get("lab_name") or "Extracted-Topology"
+            nodes = topology_data.get("nodes") or []
+            edges = [
+                {"source": l.get("source"), "target": l.get("target")}
+                for l in (topology_data.get("links") or [])
+            ]
+            deployment_result = await eve_ng_client.deploy_topology(
+                name=lab_name,
+                nodes=nodes,
+                edges=edges,
+            )
+        except Exception as dep_exc:
+            logger.warning("Auto deployment to EVE-NG failed: %s", dep_exc)
+
+    # 2. Build enriched prompt for the LLM
+    enriched_message = f"User request: {user_text}\n\n"
+    if topology_data:
+        enriched_message += (
+            f"[IMAGE TOPOLOGY EXTRACTION]\n"
+            f"- Lab Name: {topology_data.get('lab_name', 'Extracted-Topology')}\n"
+            f"- Architecture Summary: {topology_data.get('summary', 'Network diagram recognized')}\n"
+            f"- Detected Devices ({len(topology_data.get('nodes', []))}): {json.dumps(topology_data.get('nodes', []), indent=2)}\n"
+            f"- Detected Interconnections: {json.dumps(topology_data.get('links', []), indent=2)}\n"
+        )
+    elif vision_text:
+        enriched_message += f"[IMAGE ANALYSIS RESULT]\n{vision_text}\n"
+
+    if deployment_result:
+        enriched_message += (
+            f"\n[EVE-NG HYPERVISOR DEPLOYMENT STATUS]\n"
+            f"- Result: {deployment_result.get('message')}\n"
+            f"- Mode: {deployment_result.get('mode')}\n"
+            f"- Nodes Configured: {deployment_result.get('node_count')}\n"
+            f"- Links Configured: {deployment_result.get('link_count')}\n"
+            f"Confirm to the user that the diagram has been fully recognized and built into EVE-NG!\n"
+        )
+
+    # 3. Send to LLM via ai_service
+    try:
+        result = await ai_service.chat(
+            db=db,
+            message=enriched_message,
+            conversation_id=conversation_id,
+            stream=False,
+        )
+    except Exception as exc:
+        logger.error("Chat-with-image LLM error: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return {
+        "message": result.get("message", ""),
+        "conversation_id": result.get("conversation_id"),
+        "topology": topology_data,
+        "deployment": deployment_result,
+    }
