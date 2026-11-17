@@ -284,7 +284,9 @@ export const ChatPage: React.FC = () => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SpeechRecognition) return
 
+    let isDisposed = false
     let wakeRec: any = null
+
     const initWakeWord = () => {
       try {
         wakeRec = new SpeechRecognition()
@@ -293,7 +295,7 @@ export const ChatPage: React.FC = () => {
         wakeRec.lang = 'en-US'
 
         wakeRec.onresult = (event: any) => {
-          if (isVoiceModeOpenRef.current) return
+          if (isDisposed || isVoiceModeOpenRef.current) return
           let speech = ''
           for (let i = event.resultIndex; i < event.results.length; i++) {
             speech += event.results[i][0].transcript + ' '
@@ -332,17 +334,22 @@ export const ChatPage: React.FC = () => {
         }
 
         wakeRec.onend = () => {
+          if (isDisposed) return
           if (wakeWordActive && !isVoiceModeOpenRef.current) {
             setTimeout(() => {
-              if (wakeWordActive && !isVoiceModeOpenRef.current) {
+              if (!isDisposed && wakeWordActive && !isVoiceModeOpenRef.current) {
                 try { wakeRec.start() } catch {}
               }
-            }, 350)
+            }, 500)
           }
         }
 
         wakeRec.onerror = (e: any) => {
           console.warn('Wake word listener status:', e?.error)
+          if (e?.error === 'not-allowed' || e?.error === 'service-not-allowed') {
+            isDisposed = true
+            setWakeWordActive(false)
+          }
         }
 
         wakeRec.start()
@@ -357,6 +364,7 @@ export const ChatPage: React.FC = () => {
     }
 
     return () => {
+      isDisposed = true
       try { wakeRec?.stop() } catch {}
     }
   }, [wakeWordActive, isVoiceModeOpen])
