@@ -1,12 +1,17 @@
 /**
  * ChatPage.tsx – Full ChatGPT-style interface for NETLAB AI.
  *
- * Everything happens through this single page:
- * - Text chat with AI (network engineering copilot)
- * - Image upload → topology extraction & deployment
- * - Voice input via Groq Whisper STT
- * - EVE-NG queries (labs, nodes, configs) answered in real-time
- * - Configuration commands pushed to live devices
+ * Includes:
+ * - Single-page ChatGPT layout with conversation history
+ * - Direct image-to-topology upload & EVE-NG auto-deployment
+ * - Real-time conversational ChatGPT Voice Mode:
+ *   • Iconic fluid animated glowing orb
+ *   • Live Web Audio API frequency visualizer
+ *   • Hands-free Voice Activity Detection (silence detection)
+ *   • Continuous conversational turn-taking
+ *   • Tap-to-interrupt & barge-in
+ *   • Groq Whisper STT + Natural English TTS
+ *   • Live subtitles & bidirectional transcript sync
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
@@ -18,10 +23,11 @@ interface ChatMsg {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
-  image?: string          // base64 data-url for user-uploaded images
+  image?: string
   timestamp: Date
-  topology?: any          // extracted topology data from vision
-  deployment?: any        // EVE-NG deployment response
+  topology?: any
+  deployment?: any
+  isVoice?: boolean
 }
 
 interface Conversation {
@@ -29,6 +35,8 @@ interface Conversation {
   title: string
   updated_at: string
 }
+
+type VoiceAgentState = 'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking'
 
 /* ────────────────────── SVG icon helpers ────────────────── */
 
@@ -41,6 +49,20 @@ const MicIcon = ({ active }: { active?: boolean }) => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill={active ? '#ef4444' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
     <path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+  </svg>
+)
+const MicOffIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="1" y1="1" x2="23" y2="23" />
+    <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+    <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+    <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+  </svg>
+)
+const HeadphonesIcon = ({ size = 20 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+    <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
   </svg>
 )
 const ImageIcon = () => (
@@ -63,6 +85,11 @@ const MenuIcon = () => (
     <line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" />
   </svg>
 )
+const CloseIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+)
 const SpeakerIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
     <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" /><path d="M19.07 4.93a10 10 0 0 1 0 14.14" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
@@ -76,12 +103,6 @@ const CopyIcon = () => (
 const StopIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none">
     <rect x="6" y="6" width="12" height="12" rx="2" />
-  </svg>
-)
-const ChevronIcon = ({ open }: { open: boolean }) => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-    style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.2s' }}>
-    <polyline points="6 9 12 15 18 9" />
   </svg>
 )
 
@@ -118,26 +139,37 @@ function encodeWav16k(samples: Float32Array, sampleRate: number): Blob {
   return new Blob([buffer], { type: 'audio/wav' })
 }
 
-/* ────────────────── Markdown-ish renderer ────────────────── */
+/* ────────────────── Audio Chime Helper ────────────────── */
+
+function playChime(frequency: number, duration = 0.12, type: OscillatorType = 'sine') {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = type
+    osc.frequency.setValueAtTime(frequency, ctx.currentTime)
+    gain.gain.setValueAtTime(0.06, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + duration)
+  } catch {}
+}
+
+/* ────────────────── Markdown renderer ────────────────── */
 
 function renderMarkdown(text: string): string {
   let html = text
-    // Code blocks
     .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="cb"><code class="lang-$1">$2</code></pre>')
-    // Inline code
     .replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
-    // Bold
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // Italic
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    // Headers
     .replace(/^### (.+)$/gm, '<h4 class="mh">$1</h4>')
     .replace(/^## (.+)$/gm, '<h3 class="mh">$1</h3>')
     .replace(/^# (.+)$/gm, '<h2 class="mh">$1</h2>')
-    // Lists
     .replace(/^- (.+)$/gm, '<li>$1</li>')
     .replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>')
-    // Line breaks
     .replace(/\n/g, '<br/>')
   return html
 }
@@ -147,7 +179,7 @@ function renderMarkdown(text: string): string {
    ══════════════════════════════════════════════════════════════ */
 
 export const ChatPage: React.FC = () => {
-  /* ── state ── */
+  /* ── standard chat state ── */
   const [messages, setMessages] = useState<ChatMsg[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -156,18 +188,34 @@ export const ChatPage: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
-  const [recording, setRecording] = useState(false)
   const [ttsEnabled, setTtsEnabled] = useState(false)
+
+  /* ── ChatGPT Voice Mode state ── */
+  const [isVoiceModeOpen, setIsVoiceModeOpen] = useState(false)
+  const [voiceAgentState, setVoiceAgentState] = useState<VoiceAgentState>('idle')
+  const [audioLevel, setAudioLevel] = useState<number>(0)
+  const [voiceTranscript, setVoiceTranscript] = useState('')
+  const [lastAgentReply, setLastAgentReply] = useState('')
+  const [isMuted, setIsMuted] = useState(false)
 
   /* ── refs ── */
   const chatEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const audioCtxRef = useRef<AudioContext | null>(null)
-  const mediaStreamRef = useRef<MediaStream | null>(null)
-  const processorRef = useRef<ScriptProcessorNode | null>(null)
-  const pcmChunksRef = useRef<Float32Array[]>([])
   const abortRef = useRef<AbortController | null>(null)
+
+  // Voice Mode Refs
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null)
+  const audioStreamRef = useRef<MediaStream | null>(null)
+  const audioChunksRef = useRef<Float32Array[]>([])
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const animFrameRef = useRef<number | null>(null)
+  const isRecordingActiveRef = useRef<boolean>(false)
+  const recognitionRef = useRef<any>(null)
+  const voiceTranscriptRef = useRef<string>('')
+  const silenceTimerRef = useRef<any>(null)
+  const hasSpokenRef = useRef<boolean>(false)
 
   /* ── auto-scroll ── */
   useEffect(() => {
@@ -188,7 +236,6 @@ export const ChatPage: React.FC = () => {
   }, [input])
 
   /* ── helpers ── */
-
   const loadConversations = async () => {
     try {
       const res = await apiClient.getConversations()
@@ -237,17 +284,41 @@ export const ChatPage: React.FC = () => {
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 
   /* ── speak text via Web Speech API ── */
-  const speak = useCallback((text: string) => {
-    if (!ttsEnabled || !('speechSynthesis' in window)) return
-    // Strip markdown for cleaner speech
-    const clean = text.replace(/```[\s\S]*?```/g, '').replace(/[*#_`]/g, '').replace(/<[^>]+>/g, '')
-    if (!clean.trim()) return
-    const utter = new SpeechSynthesisUtterance(clean.slice(0, 500))
+  const speak = useCallback((text: string, onDone?: () => void) => {
+    if (!('speechSynthesis' in window)) return
+    const clean = text
+      .replace(/```[\s\S]*?```/g, 'Configuration code provided.')
+      .replace(/[*#_`]/g, '')
+      .replace(/<[^>]+>/g, '')
+      .trim()
+    if (!clean) {
+      onDone?.()
+      return
+    }
+
+    window.speechSynthesis.cancel()
+    const utter = new SpeechSynthesisUtterance(clean.slice(0, 900))
     utter.lang = 'en-US'
     utter.rate = 1.05
-    speechSynthesis.cancel()
-    speechSynthesis.speak(utter)
-  }, [ttsEnabled])
+
+    const voices = window.speechSynthesis.getVoices()
+    const preferredVoice =
+      voices.find(v => (v.lang === 'en-US' || v.lang === 'en_US') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('David') || v.name.includes('Jenny'))) ||
+      voices.find(v => v.lang.startsWith('en'))
+    if (preferredVoice) utter.voice = preferredVoice
+
+    utter.onstart = () => {
+      setVoiceAgentState('speaking')
+    }
+    utter.onend = () => {
+      onDone?.()
+    }
+    utter.onerror = () => {
+      onDone?.()
+    }
+
+    window.speechSynthesis.speak(utter)
+  }, [])
 
   /* ── copy text ── */
   const copyText = (text: string) => {
@@ -256,37 +327,34 @@ export const ChatPage: React.FC = () => {
 
   /* ═══════════════════════ SEND MESSAGE ═══════════════════════ */
 
-  const sendMessage = async () => {
-    const text = input.trim()
+  const sendMessage = async (overrideText?: string, isVoice = false) => {
+    const text = (overrideText !== undefined ? overrideText : input).trim()
     if (!text && !imageFile) return
     if (loading) return
 
-    // Abort any pending request
     abortRef.current?.abort()
     abortRef.current = new AbortController()
 
-    // Build user message
     const userMsg: ChatMsg = {
       id: uid(),
       role: 'user',
       content: text || '(image uploaded)',
       image: imagePreview || undefined,
       timestamp: new Date(),
+      isVoice,
     }
     setMessages(prev => [...prev, userMsg])
-    setInput('')
+    if (overrideText === undefined) setInput('')
     setImagePreview(null)
     setLoading(true)
 
-    // Placeholder for assistant
     const assistantId = uid()
-    setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date() }])
+    setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '', timestamp: new Date(), isVoice }])
 
     try {
       let result: any
 
       if (imageFile) {
-        // ── Image + text → vision endpoint + chat ──
         const formData = new FormData()
         formData.append('file', imageFile)
         if (text) formData.append('message', text)
@@ -300,7 +368,6 @@ export const ChatPage: React.FC = () => {
         result = resp.data
         setImageFile(null)
       } else {
-        // ── Text-only chat ──
         result = await apiClient.sendChat(text, conversationId ?? undefined)
       }
 
@@ -316,7 +383,24 @@ export const ChatPage: React.FC = () => {
       )
       if (newConvId) setConversationId(newConvId)
       loadConversations()
-      speak(reply)
+
+      if (isVoice) {
+        setLastAgentReply(reply)
+        setVoiceAgentState('speaking')
+        speak(reply, () => {
+          // Continuous conversational loop: listen again when AI finishes speaking
+          if (isVoiceModeOpen) {
+            setVoiceAgentState('idle')
+            setTimeout(() => {
+              startVoiceRecording()
+            }, 400)
+          } else {
+            setVoiceAgentState('idle')
+          }
+        })
+      } else if (ttsEnabled) {
+        speak(reply)
+      }
     } catch (err: any) {
       if (err?.name === 'CanceledError' || err?.name === 'AbortError') return
       const errMsg = err?.response?.data?.detail || err?.message || 'Something went wrong'
@@ -327,12 +411,14 @@ export const ChatPage: React.FC = () => {
             : m
         )
       )
+      if (isVoice) {
+        setVoiceAgentState('idle')
+      }
     } finally {
       setLoading(false)
     }
   }
 
-  /* ── stop generation ── */
   const stopGeneration = () => {
     abortRef.current?.abort()
     setLoading(false)
@@ -347,7 +433,6 @@ export const ChatPage: React.FC = () => {
     const reader = new FileReader()
     reader.onload = () => setImagePreview(reader.result as string)
     reader.readAsDataURL(file)
-    // Reset input so same file can be re-selected
     e.target.value = ''
   }
 
@@ -356,7 +441,6 @@ export const ChatPage: React.FC = () => {
     setImagePreview(null)
   }
 
-  /* ── drag & drop ── */
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     const file = e.dataTransfer.files[0]
@@ -368,80 +452,241 @@ export const ChatPage: React.FC = () => {
     }
   }
 
-  /* ═══════════════════════ VOICE RECORDING ═══════════════════════ */
+  /* ═══════════════════ CHATGPT VOICE MODE LOGIC ═══════════════════ */
 
-  const startRecording = async () => {
+  // Audio setup for live visualizer & PCM capture
+  const setupAudioGraph = (stream: MediaStream) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaStreamRef.current = stream
-      const ctx = new AudioContext()
-      audioCtxRef.current = ctx
-      const source = ctx.createMediaStreamSource(stream)
-      const processor = ctx.createScriptProcessor(4096, 1, 1)
-      pcmChunksRef.current = []
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)()
+      audioContextRef.current = audioCtx
+
+      const source = audioCtx.createMediaStreamSource(stream)
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 64
+      analyserRef.current = analyser
+      source.connect(analyser)
+
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+      audioProcessorRef.current = processor
+      audioChunksRef.current = []
+
       processor.onaudioprocess = (e) => {
-        const data = e.inputBuffer.getChannelData(0)
-        pcmChunksRef.current.push(new Float32Array(data))
+        if (!isRecordingActiveRef.current) return
+        const channelData = e.inputBuffer.getChannelData(0)
+        audioChunksRef.current.push(new Float32Array(channelData))
       }
+
       source.connect(processor)
-      processor.connect(ctx.destination)
-      processorRef.current = processor
-      setRecording(true)
-    } catch {
-      alert('Microphone access denied')
-    }
-  }
+      processor.connect(audioCtx.destination)
 
-  const stopRecording = async () => {
-    setRecording(false)
-    // Stop processor + stream
-    processorRef.current?.disconnect()
-    mediaStreamRef.current?.getTracks().forEach(t => t.stop())
-    const ctx = audioCtxRef.current
-    if (!ctx) return
+      const bufferLength = analyser.frequencyBinCount
+      const dataArray = new Uint8Array(bufferLength)
 
-    // Merge PCM chunks
-    const chunks = pcmChunksRef.current
-    const totalLen = chunks.reduce((s, c) => s + c.length, 0)
-    const merged = new Float32Array(totalLen)
-    let off = 0
-    for (const c of chunks) { merged.set(c, off); off += c.length }
+      const updateLevel = () => {
+        if (!isRecordingActiveRef.current) return
+        analyser.getByteFrequencyData(dataArray)
+        let sum = 0
+        for (let i = 0; i < bufferLength; i++) {
+          sum += dataArray[i]
+        }
+        const currentAvg = sum / bufferLength
+        setAudioLevel(currentAvg)
 
-    if (totalLen < 1600) return // too short
+        // Hands-Free Silence Detection (VAD)
+        if (currentAvg > 16) {
+          hasSpokenRef.current = true
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current)
+            silenceTimerRef.current = null
+          }
+        } else if (hasSpokenRef.current && currentAvg <= 14) {
+          if (!silenceTimerRef.current) {
+            silenceTimerRef.current = setTimeout(() => {
+              if (isRecordingActiveRef.current && hasSpokenRef.current) {
+                stopVoiceRecording(true)
+              }
+            }, 1400) // 1.4s natural conversational pause
+          }
+        }
 
-    // Encode WAV
-    const wavBlob = encodeWav16k(merged, ctx.sampleRate)
-    await ctx.close()
-
-    // Transcribe
-    setLoading(true)
-    try {
-      const sttRes = await apiClient.transcribeAudio(wavBlob, 'audio.wav')
-      const text = sttRes.text?.trim()
-      if (text) {
-        setInput(text)
-        // Auto-send after short delay
-        setTimeout(() => {
-          setInput(prev => {
-            if (prev === text) {
-              // trigger send
-              const fakeEvent = { key: 'Enter', shiftKey: false, preventDefault: () => {} }
-              handleKeyDown(fakeEvent as any)
-            }
-            return prev
-          })
-        }, 300)
+        animFrameRef.current = requestAnimationFrame(updateLevel)
       }
-    } catch {
-      alert('Speech recognition failed')
-    } finally {
-      setLoading(false)
+      updateLevel()
+    } catch (e) {
+      console.warn('Audio graph error:', e)
     }
   }
 
-  const toggleRecording = () => {
-    if (recording) stopRecording()
-    else startRecording()
+  const stopAudioGraph = () => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+    hasSpokenRef.current = false
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current)
+      animFrameRef.current = null
+    }
+    if (audioProcessorRef.current) {
+      audioProcessorRef.current.disconnect()
+      audioProcessorRef.current = null
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((track) => track.stop())
+      audioStreamRef.current = null
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {})
+      audioContextRef.current = null
+    }
+    setAudioLevel(0)
+  }
+
+  const startVoiceRecording = async () => {
+    try {
+      window.speechSynthesis?.cancel()
+      voiceTranscriptRef.current = ''
+      setVoiceTranscript('')
+      isRecordingActiveRef.current = true
+      hasSpokenRef.current = false
+      playChime(640, 0.08)
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      })
+      audioStreamRef.current = stream
+      setupAudioGraph(stream)
+
+      // Optional local Web Speech Recognition for instant captions
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+      if (SpeechRecognition) {
+        try {
+          const rec = new SpeechRecognition()
+          rec.continuous = true
+          rec.interimResults = true
+          rec.lang = 'en-US'
+          rec.onresult = (event: any) => {
+            let tr = ''
+            for (let i = 0; i < event.results.length; i++) {
+              tr += event.results[i][0].transcript + ' '
+            }
+            const t = tr.trim()
+            if (t) {
+              voiceTranscriptRef.current = t
+              setVoiceTranscript(t)
+            }
+          }
+          rec.start()
+          recognitionRef.current = rec
+        } catch {}
+      }
+
+      setVoiceAgentState('listening')
+    } catch (err: any) {
+      console.error('Microphone error:', err)
+      alert('Microphone access was denied. Please allow microphone permissions in your browser.')
+      isRecordingActiveRef.current = false
+      setVoiceAgentState('idle')
+    }
+  }
+
+  const stopVoiceRecording = async (shouldSubmit = true) => {
+    if (!isRecordingActiveRef.current) return
+    isRecordingActiveRef.current = false
+    playChime(420, 0.08)
+
+    try {
+      recognitionRef.current?.stop()
+    } catch {}
+
+    const sampleRate = audioContextRef.current?.sampleRate || 44100
+    const capturedChunks = [...audioChunksRef.current]
+    stopAudioGraph()
+
+    if (!shouldSubmit) {
+      setVoiceAgentState('idle')
+      return
+    }
+
+    setVoiceAgentState('transcribing')
+
+    let recognizedText = ''
+
+    // 1. Groq Whisper 16kHz WAV transcription
+    if (capturedChunks.length > 0) {
+      try {
+        let totalSamples = 0
+        capturedChunks.forEach(c => (totalSamples += c.length))
+        const merged = new Float32Array(totalSamples)
+        let offset = 0
+        capturedChunks.forEach(c => {
+          merged.set(c, offset)
+          offset += c.length
+        })
+
+        if (totalSamples / sampleRate > 0.35) {
+          const wavBlob = encodeWav16k(merged, sampleRate)
+          const res = await apiClient.transcribeAudio(wavBlob, 'voice.wav')
+          if (res && res.text) {
+            recognizedText = res.text.trim()
+          }
+        }
+      } catch (err) {
+        console.warn('Groq Whisper error, fallback to local captions:', err)
+      }
+    }
+
+    // 2. Fallback to local captions
+    if (!recognizedText && voiceTranscriptRef.current.trim()) {
+      recognizedText = voiceTranscriptRef.current.trim()
+    }
+
+    voiceTranscriptRef.current = ''
+
+    if (recognizedText) {
+      setVoiceTranscript(recognizedText)
+      setVoiceAgentState('thinking')
+      await sendMessage(recognizedText, true)
+    } else {
+      setVoiceAgentState('idle')
+      if (isVoiceModeOpen) {
+        setTimeout(() => startVoiceRecording(), 500)
+      }
+    }
+  }
+
+  const openVoiceMode = () => {
+    setIsVoiceModeOpen(true)
+    setIsMuted(false)
+    startVoiceRecording()
+  }
+
+  const closeVoiceMode = () => {
+    window.speechSynthesis?.cancel()
+    stopAudioGraph()
+    isRecordingActiveRef.current = false
+    setVoiceAgentState('idle')
+    setIsVoiceModeOpen(false)
+  }
+
+  const toggleMute = () => {
+    if (isMuted) {
+      setIsMuted(false)
+      startVoiceRecording()
+    } else {
+      setIsMuted(true)
+      stopVoiceRecording(false)
+    }
+  }
+
+  const interruptSpeech = () => {
+    window.speechSynthesis?.cancel()
+    setVoiceAgentState('idle')
+    setTimeout(() => startVoiceRecording(), 200)
   }
 
   /* ── keyboard ── */
@@ -462,7 +707,7 @@ export const ChatPage: React.FC = () => {
   ]
 
   return (
-    <div className="dark" style={{ height: '100vh', display: 'flex', background: '#0a0a0a' }}>
+    <div className="dark" style={{ height: '100vh', display: 'flex', background: '#0a0a0a', position: 'relative', overflow: 'hidden' }}>
       {/* ══════ SIDEBAR ══════ */}
       <aside
         style={{
@@ -476,7 +721,6 @@ export const ChatPage: React.FC = () => {
           transition: 'width 0.25s ease, min-width 0.25s ease',
         }}
       >
-        {/* New Chat button */}
         <div style={{ padding: '12px' }}>
           <button
             onClick={newChat}
@@ -501,7 +745,6 @@ export const ChatPage: React.FC = () => {
           </button>
         </div>
 
-        {/* Conversation list */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 12px' }}>
           {conversations.map(c => (
             <div
@@ -547,7 +790,6 @@ export const ChatPage: React.FC = () => {
           ))}
         </div>
 
-        {/* Footer */}
         <div style={{ padding: '12px 16px', borderTop: '1px solid #222', fontSize: 11, color: '#555' }}>
           NETLAB AI • EVE-NG Copilot
         </div>
@@ -582,56 +824,110 @@ export const ChatPage: React.FC = () => {
           >
             <MenuIcon />
           </button>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
             <h1 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#e5e5e5' }}>
               NETLAB AI
             </h1>
+            <span style={{
+              fontSize: 10,
+              background: '#065f46',
+              color: '#34d399',
+              padding: '2px 6px',
+              borderRadius: 4,
+              fontWeight: 600,
+            }}>
+              GPT-120B
+            </span>
           </div>
-          {/* TTS Toggle */}
+
+          {/* ChatGPT Voice Mode Launcher Button in Header */}
           <button
-            onClick={() => setTtsEnabled(!ttsEnabled)}
+            onClick={openVoiceMode}
+            title="Launch ChatGPT Voice Mode"
             style={{
-              background: ttsEnabled ? '#1d4ed8' : '#1a1a1a',
-              border: '1px solid ' + (ttsEnabled ? '#2563eb' : '#333'),
-              borderRadius: 6,
-              color: ttsEnabled ? '#fff' : '#888',
+              background: 'linear-gradient(135deg, #1e3a8a, #2563eb)',
+              border: '1px solid #3b82f6',
+              borderRadius: 20,
+              color: '#ffffff',
               cursor: 'pointer',
-              padding: '5px 10px',
-              fontSize: 12,
+              padding: '6px 14px',
+              fontSize: 13,
+              fontWeight: 500,
               display: 'flex',
               alignItems: 'center',
-              gap: 4,
+              gap: 6,
+              boxShadow: '0 2px 10px rgba(37, 99, 235, 0.3)',
+              transition: 'all 0.15s',
             }}
+            onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.02)')}
+            onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
           >
-            <SpeakerIcon /> {ttsEnabled ? 'TTS On' : 'TTS Off'}
+            <HeadphonesIcon size={16} />
+            <span>Voice Mode</span>
           </button>
         </header>
 
         {/* ══════ MESSAGES ══════ */}
-        <div
-          style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: '0 16px',
-          }}
-        >
+        <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px' }}>
           <div style={{ maxWidth: 800, margin: '0 auto', paddingTop: 24, paddingBottom: 24 }}>
             {messages.length === 0 ? (
-              /* ── EMPTY STATE ── */
               <div style={{ textAlign: 'center', paddingTop: '15vh' }}>
                 <div style={{
-                  width: 64, height: 64, borderRadius: 16, background: 'linear-gradient(135deg, #1d4ed8, #7c3aed)',
+                  width: 68, height: 68, borderRadius: 20, background: 'linear-gradient(135deg, #2563eb, #7c3aed)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px',
-                  fontSize: 28,
+                  fontSize: 32, boxShadow: '0 8px 24px rgba(37, 99, 235, 0.35)',
                 }}>
                   🌐
                 </div>
                 <h2 style={{ color: '#e5e5e5', fontSize: 24, fontWeight: 600, margin: '0 0 8px' }}>
                   Welcome to NETLAB AI
                 </h2>
-                <p style={{ color: '#777', fontSize: 14, margin: '0 0 32px' }}>
-                  Your AI-powered network engineering copilot. Ask anything, upload topologies, or voice your queries.
+                <p style={{ color: '#777', fontSize: 14, margin: '0 0 28px' }}>
+                  Your AI network engineering copilot. Talk naturally with ChatGPT Voice Mode or type commands below.
                 </p>
+
+                {/* Big Voice Call-to-Action Card */}
+                <div style={{
+                  background: 'linear-gradient(135deg, #111827, #0f172a)',
+                  border: '1px solid #1e293b',
+                  borderRadius: 16,
+                  padding: '18px 24px',
+                  maxWidth: 500,
+                  margin: '0 auto 32px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)',
+                }}>
+                  <div style={{ textAlign: 'left' }}>
+                    <div style={{ color: '#38bdf8', fontWeight: 600, fontSize: 15, marginBottom: 4 }}>
+                      🎙️ ChatGPT Voice Experience
+                    </div>
+                    <div style={{ color: '#94a3b8', fontSize: 12 }}>
+                      Hands-free continuous conversation with live speech synthesis.
+                    </div>
+                  </div>
+                  <button
+                    onClick={openVoiceMode}
+                    style={{
+                      background: '#2563eb',
+                      border: 'none',
+                      borderRadius: 12,
+                      color: '#fff',
+                      padding: '10px 18px',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      boxShadow: '0 2px 10px rgba(37, 99, 235, 0.4)',
+                    }}
+                  >
+                    <HeadphonesIcon size={16} /> Start
+                  </button>
+                </div>
+
                 <div style={{
                   display: 'grid',
                   gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
@@ -642,7 +938,7 @@ export const ChatPage: React.FC = () => {
                   {quickPrompts.map((p, i) => (
                     <button
                       key={i}
-                      onClick={() => { setInput(p) }}
+                      onClick={() => setInput(p)}
                       style={{
                         background: '#141414',
                         border: '1px solid #252525',
@@ -663,7 +959,6 @@ export const ChatPage: React.FC = () => {
                 </div>
               </div>
             ) : (
-              /* ── MESSAGE LIST ── */
               messages.map(msg => (
                 <div
                   key={msg.id}
@@ -675,7 +970,6 @@ export const ChatPage: React.FC = () => {
                     flexDirection: msg.role === 'user' ? 'row-reverse' : 'row',
                   }}
                 >
-                  {/* Avatar */}
                   <div
                     style={{
                       width: 32,
@@ -695,9 +989,7 @@ export const ChatPage: React.FC = () => {
                     {msg.role === 'user' ? '👤' : '🤖'}
                   </div>
 
-                  {/* Content */}
                   <div style={{ flex: 1, minWidth: 0, maxWidth: msg.role === 'user' ? '70%' : '100%' }}>
-                    {/* Image if present */}
                     {msg.image && (
                       <div style={{ marginBottom: 10 }}>
                         <img
@@ -713,7 +1005,6 @@ export const ChatPage: React.FC = () => {
                       </div>
                     )}
 
-                    {/* Text */}
                     {msg.role === 'user' ? (
                       <div
                         style={{
@@ -728,6 +1019,7 @@ export const ChatPage: React.FC = () => {
                           wordBreak: 'break-word',
                         }}
                       >
+                        {msg.isVoice && <span style={{ marginRight: 6, opacity: 0.8 }}>🎙️</span>}
                         {msg.content}
                       </div>
                     ) : (
@@ -751,7 +1043,6 @@ export const ChatPage: React.FC = () => {
                           </div>
                         )}
 
-                        {/* Action buttons */}
                         {msg.content && (
                           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                             <button
@@ -781,7 +1072,7 @@ export const ChatPage: React.FC = () => {
                           </div>
                         )}
 
-                        {/* Topology & EVE-NG Deployment card if present */}
+                        {/* Topology card */}
                         {(msg.topology || msg.deployment) && (
                           <div style={{
                             marginTop: 14,
@@ -858,7 +1149,6 @@ export const ChatPage: React.FC = () => {
           borderTop: '1px solid #1a1a1a',
         }}>
           <div style={{ maxWidth: 800, margin: '0 auto' }}>
-            {/* Image preview */}
             {imagePreview && (
               <div style={{ marginBottom: 10, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <div style={{ position: 'relative' }}>
@@ -892,7 +1182,6 @@ export const ChatPage: React.FC = () => {
               </div>
             )}
 
-            {/* Input row */}
             <div
               style={{
                 display: 'flex',
@@ -904,9 +1193,7 @@ export const ChatPage: React.FC = () => {
                 padding: '8px 12px',
                 transition: 'border-color 0.15s',
               }}
-              onFocus={() => {}}
             >
-              {/* Image upload */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -927,13 +1214,12 @@ export const ChatPage: React.FC = () => {
                 <ImageIcon />
               </button>
 
-              {/* Text input */}
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Message NETLAB AI..."
+                placeholder="Message NETLAB AI or tap headphones to talk..."
                 rows={1}
                 style={{
                   flex: 1,
@@ -950,27 +1236,26 @@ export const ChatPage: React.FC = () => {
                 }}
               />
 
-              {/* Voice */}
+              {/* ChatGPT Voice Mode Button */}
               <button
-                onClick={toggleRecording}
-                title={recording ? 'Stop recording' : 'Voice input'}
+                onClick={openVoiceMode}
+                title="Open ChatGPT Voice Mode"
                 style={{
-                  background: recording ? '#dc2626' : 'none',
+                  background: 'none',
                   border: 'none',
-                  color: recording ? '#fff' : '#666',
+                  color: '#38bdf8',
                   cursor: 'pointer',
                   display: 'flex',
                   padding: 4,
                   borderRadius: 6,
-                  animation: recording ? 'pulse 1.5s infinite' : 'none',
+                  transition: 'transform 0.15s',
                 }}
-                onMouseEnter={e => { if (!recording) e.currentTarget.style.color = '#aaa' }}
-                onMouseLeave={e => { if (!recording) e.currentTarget.style.color = '#666' }}
+                onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.15)')}
+                onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
               >
-                <MicIcon active={recording} />
+                <HeadphonesIcon size={20} />
               </button>
 
-              {/* Send / Stop */}
               {loading ? (
                 <button
                   onClick={stopGeneration}
@@ -989,7 +1274,7 @@ export const ChatPage: React.FC = () => {
                 </button>
               ) : (
                 <button
-                  onClick={sendMessage}
+                  onClick={() => sendMessage()}
                   disabled={!input.trim() && !imageFile}
                   title="Send"
                   style={{
@@ -1015,6 +1300,328 @@ export const ChatPage: React.FC = () => {
         </div>
       </main>
 
+      {/* ══════════════════════════════════════════════════════════════
+         CHATGPT VOICE MODE OVERLAY (Full Immersive Modal)
+         ══════════════════════════════════════════════════════════════ */}
+      {isVoiceModeOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 100,
+            background: 'radial-gradient(circle at center, #0f172a 0%, #000000 100%)',
+            backdropFilter: 'blur(20px)',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '24px 20px',
+            color: '#fff',
+            animation: 'fadeIn 0.25s ease-out',
+          }}
+        >
+          {/* Top Voice Header */}
+          <div style={{ width: '100%', maxWidth: 700, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{
+                display: 'inline-block',
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: voiceAgentState === 'listening' ? '#10b981' : voiceAgentState === 'speaking' ? '#6366f1' : '#f59e0b',
+                boxShadow: voiceAgentState === 'listening' ? '0 0 10px #10b981' : '0 0 10px #6366f1',
+                animation: 'pulse 1.5s infinite',
+              }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+                NETLAB AI Voice
+              </span>
+            </div>
+
+            <button
+              onClick={closeVoiceMode}
+              title="Close Voice Mode"
+              style={{
+                background: 'rgba(255, 255, 255, 0.08)',
+                border: '1px solid rgba(255, 255, 255, 0.12)',
+                borderRadius: '50%',
+                width: 38,
+                height: 38,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#cbd5e1',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)'; e.currentTarget.style.color = '#fff' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; e.currentTarget.style.color = '#cbd5e1' }}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+
+          {/* Centerpiece: The Animated ChatGPT Fluid Glowing Orb */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 'auto' }}>
+            <div
+              style={{
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 320,
+                height: 320,
+              }}
+            >
+              {/* Outer Glow Ring 1 */}
+              <div
+                style={{
+                  position: 'absolute',
+                  width: 290,
+                  height: 290,
+                  borderRadius: '50%',
+                  border: `1px solid ${
+                    voiceAgentState === 'listening'
+                      ? 'rgba(56, 189, 248, 0.25)'
+                      : voiceAgentState === 'speaking'
+                      ? 'rgba(129, 140, 248, 0.3)'
+                      : 'rgba(148, 163, 184, 0.1)'
+                  }`,
+                  transform: `scale(${1 + Math.min(0.2, (audioLevel / 100) * 0.4)})`,
+                  transition: 'transform 0.1s ease-out, border-color 0.3s',
+                  pointerEvents: 'none',
+                }}
+              />
+
+              {/* Middle Glow Ring 2 */}
+              <div
+                style={{
+                  position: 'absolute',
+                  width: 230,
+                  height: 230,
+                  borderRadius: '50%',
+                  border: `2px solid ${
+                    voiceAgentState === 'listening'
+                      ? 'rgba(56, 189, 248, 0.45)'
+                      : voiceAgentState === 'speaking'
+                      ? 'rgba(129, 140, 248, 0.5)'
+                      : 'rgba(148, 163, 184, 0.2)'
+                  }`,
+                  transform: `scale(${1 + Math.min(0.15, (audioLevel / 100) * 0.3)})`,
+                  transition: 'transform 0.1s ease-out',
+                  pointerEvents: 'none',
+                }}
+              />
+
+              {/* The Central Organic Orb */}
+              <div
+                onClick={() => {
+                  if (voiceAgentState === 'speaking') {
+                    interruptSpeech()
+                  } else if (voiceAgentState === 'listening') {
+                    stopVoiceRecording(true)
+                  } else {
+                    startVoiceRecording()
+                  }
+                }}
+                style={{
+                  width: 170,
+                  height: 170,
+                  borderRadius: '50%',
+                  cursor: 'pointer',
+                  transform: `scale(${
+                    voiceAgentState === 'listening'
+                      ? 1 + Math.min(0.25, (audioLevel / 100) * 0.5)
+                      : voiceAgentState === 'speaking'
+                      ? 1.06
+                      : 1
+                  })`,
+                  background:
+                    voiceAgentState === 'listening'
+                      ? 'radial-gradient(circle at 35% 35%, #67e8f9 0%, #06b6d4 50%, #0284c7 100%)'
+                      : voiceAgentState === 'speaking'
+                      ? 'radial-gradient(circle at 35% 35%, #a5b4fc 0%, #6366f1 50%, #4338ca 100%)'
+                      : voiceAgentState === 'thinking' || voiceAgentState === 'transcribing'
+                      ? 'radial-gradient(circle at 35% 35%, #fde047 0%, #eab308 50%, #ca8a04 100%)'
+                      : 'radial-gradient(circle at 35% 35%, #475569 0%, #334155 50%, #1e293b 100%)',
+                  boxShadow:
+                    voiceAgentState === 'listening'
+                      ? `0 0 ${40 + audioLevel * 0.8}px rgba(6, 182, 212, 0.7), inset 0 0 25px rgba(255, 255, 255, 0.6)`
+                      : voiceAgentState === 'speaking'
+                      ? '0 0 60px rgba(99, 102, 241, 0.7), inset 0 0 25px rgba(255, 255, 255, 0.5)'
+                      : voiceAgentState === 'thinking' || voiceAgentState === 'transcribing'
+                      ? '0 0 50px rgba(234, 179, 8, 0.6), inset 0 0 20px rgba(255, 255, 255, 0.4)'
+                      : '0 0 20px rgba(0, 0, 0, 0.5), inset 0 0 10px rgba(255, 255, 255, 0.1)',
+                  transition: 'transform 0.08s ease-out, box-shadow 0.2s ease, background 0.3s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {/* Visualizer bars inside the orb */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  {[12, 24, 38, 26, 14].map((h, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        width: 4,
+                        borderRadius: 2,
+                        background: '#ffffff',
+                        height:
+                          voiceAgentState === 'listening'
+                            ? Math.max(6, Math.min(46, (audioLevel / 2) * (h / 18)))
+                            : voiceAgentState === 'speaking'
+                            ? Math.max(8, (Math.sin(Date.now() / 150 + idx) + 1.2) * 14)
+                            : 6,
+                        opacity: 0.9,
+                        transition: 'height 0.08s ease-out',
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Live State Label */}
+            <div style={{ textAlign: 'center', marginTop: 24 }}>
+              <div style={{ fontSize: 16, fontWeight: 500, letterSpacing: '0.02em', color: '#f8fafc' }}>
+                {voiceAgentState === 'listening' && (
+                  <span style={{ color: '#38bdf8' }}>Listening... Speak naturally</span>
+                )}
+                {voiceAgentState === 'transcribing' && (
+                  <span style={{ color: '#fbbf24' }}>Transcribing with Whisper...</span>
+                )}
+                {voiceAgentState === 'thinking' && (
+                  <span style={{ color: '#f59e0b' }}>Thinking...</span>
+                )}
+                {voiceAgentState === 'speaking' && (
+                  <span style={{ color: '#a5b4fc' }}>NETLAB AI Speaking (Tap orb to interrupt)</span>
+                )}
+                {voiceAgentState === 'idle' && (
+                  <span style={{ color: '#94a3b8' }}>Tap orb to talk</span>
+                )}
+              </div>
+            </div>
+
+            {/* Live Subtitles Box */}
+            <div
+              style={{
+                width: '100%',
+                maxWidth: 520,
+                minHeight: 68,
+                maxHeight: 110,
+                overflowY: 'auto',
+                marginTop: 20,
+                padding: '12px 18px',
+                borderRadius: 14,
+                background: 'rgba(255, 255, 255, 0.04)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                fontSize: 13,
+                lineHeight: 1.6,
+                color: '#cbd5e1',
+                textAlign: 'center',
+              }}
+            >
+              {voiceTranscript ? (
+                <div>
+                  <span style={{ fontSize: 11, color: '#38bdf8', fontWeight: 600, display: 'block', marginBottom: 2 }}>YOU:</span>
+                  <span>{voiceTranscript}</span>
+                </div>
+              ) : lastAgentReply ? (
+                <div>
+                  <span style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 600, display: 'block', marginBottom: 2 }}>NETLAB AI:</span>
+                  <span style={{ color: '#e2e8f0' }}>{lastAgentReply.slice(0, 180)}{lastAgentReply.length > 180 ? '…' : ''}</span>
+                </div>
+              ) : (
+                <span style={{ color: '#64748b', fontStyle: 'italic' }}>
+                  Ask any question about your EVE-NG labs, routing, or Cisco configs...
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Bottom Call Controls (Like ChatGPT Voice UI) */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 24,
+              width: '100%',
+              maxWidth: 400,
+              paddingBottom: 16,
+            }}
+          >
+            {/* Mute button */}
+            <button
+              onClick={toggleMute}
+              title={isMuted ? 'Unmute' : 'Mute'}
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: '50%',
+                background: isMuted ? '#ef4444' : 'rgba(255, 255, 255, 0.1)',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                color: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+            >
+              {isMuted ? <MicOffIcon /> : <MicIcon />}
+            </button>
+
+            {/* End Call / Close button */}
+            <button
+              onClick={closeVoiceMode}
+              title="End Voice Conversation"
+              style={{
+                width: 62,
+                height: 62,
+                borderRadius: '50%',
+                background: '#dc2626',
+                border: 'none',
+                color: '#fff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                boxShadow: '0 4px 16px rgba(220, 38, 38, 0.5)',
+                transition: 'transform 0.15s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.08)')}
+              onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+            >
+              <CloseIcon />
+            </button>
+
+            {/* Interrupt / Stop Speech button */}
+            <button
+              onClick={interruptSpeech}
+              title="Interrupt / Talk"
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: '50%',
+                background: 'rgba(255, 255, 255, 0.1)',
+                border: '1px solid rgba(255, 255, 255, 0.15)',
+                color: '#cbd5e1',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                transition: 'all 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.18)'; e.currentTarget.style.color = '#fff' }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'; e.currentTarget.style.color = '#cbd5e1' }}
+            >
+              <StopIcon />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Global styles ── */}
       <style>{`
         @keyframes pulse {
@@ -1024,6 +1631,10 @@ export const ChatPage: React.FC = () => {
         @keyframes bounce-dot {
           0%, 80%, 100% { transform: translateY(0); }
           40% { transform: translateY(-6px); }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: scale(0.98); }
+          to { opacity: 1; transform: scale(1); }
         }
         .dot-bounce {
           width: 6px;
@@ -1068,7 +1679,6 @@ export const ChatPage: React.FC = () => {
         .ai-msg em { color: #94a3b8; }
         textarea::placeholder { color: #555; }
 
-        /* Mobile */
         @media (max-width: 768px) {
           aside { position: fixed !important; z-index: 50; height: 100vh; }
         }
