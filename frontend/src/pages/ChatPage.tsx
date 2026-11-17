@@ -157,6 +157,43 @@ function playChime(frequency: number, duration = 0.12, type: OscillatorType = 's
   } catch {}
 }
 
+/* ────────────────── Female Voice Selection ────────────────── */
+
+const FEMALE_VOICE_KEYWORDS = [
+  'jenny', 'aria', 'zira', 'samantha', 'victoria', 'ava', 'emma', 'sonia',
+  'google us english', 'female', 'karen', 'moira', 'tessa', 'fiona', 'natural'
+]
+
+const MALE_VOICE_KEYWORDS = [
+  'david', 'guy', 'mark', 'george', 'male', 'richard', 'james', 'brian'
+]
+
+function getFemaleVoice(): SpeechSynthesisVoice | null {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null
+  const voices = window.speechSynthesis.getVoices()
+  if (!voices || voices.length === 0) return null
+
+  // 1. Look for recognized female voice keywords
+  for (const kw of FEMALE_VOICE_KEYWORDS) {
+    const match = voices.find(v => {
+      const name = v.name.toLowerCase()
+      const isEnglish = v.lang.startsWith('en')
+      const isNotMale = !MALE_VOICE_KEYWORDS.some(m => name.includes(m))
+      return isEnglish && isNotMale && name.includes(kw)
+    })
+    if (match) return match
+  }
+
+  // 2. Any English voice not in the male list
+  const anyNonMale = voices.find(v => {
+    const name = v.name.toLowerCase()
+    return v.lang.startsWith('en') && !MALE_VOICE_KEYWORDS.some(m => name.includes(m))
+  })
+  if (anyNonMale) return anyNonMale
+
+  return voices.find(v => v.lang.startsWith('en')) || voices[0] || null
+}
+
 /* ────────────────── Markdown renderer ────────────────── */
 
 function renderMarkdown(text: string): string {
@@ -197,6 +234,7 @@ export const ChatPage: React.FC = () => {
   const [voiceTranscript, setVoiceTranscript] = useState('')
   const [lastAgentReply, setLastAgentReply] = useState('')
   const [isMuted, setIsMuted] = useState(false)
+  const [wakeWordActive, setWakeWordActive] = useState(true)
 
   /* ── refs ── */
   const chatEndRef = useRef<HTMLDivElement>(null)
@@ -218,11 +256,110 @@ export const ChatPage: React.FC = () => {
   const hasSpokenRef = useRef<boolean>(false)
   const isSpeakingCanceledRef = useRef<boolean>(false)
   const voiceAgentStateRef = useRef<VoiceAgentState>('idle')
+  const isVoiceModeOpenRef = useRef<boolean>(false)
+  const wakeWordRecognitionRef = useRef<any>(null)
 
   const updateVoiceState = (state: VoiceAgentState) => {
     voiceAgentStateRef.current = state
     setVoiceAgentState(state)
   }
+
+  /* ── sync isVoiceModeOpenRef ── */
+  useEffect(() => {
+    isVoiceModeOpenRef.current = isVoiceModeOpen
+  }, [isVoiceModeOpen])
+
+  /* ── preload TTS voices on mount ── */
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.getVoices()
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices()
+      }
+    }
+  }, [])
+
+  /* ── Background "Hey Sanve" Wake Word Listener ── */
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognition) return
+
+    let wakeRec: any = null
+    const initWakeWord = () => {
+      try {
+        wakeRec = new SpeechRecognition()
+        wakeRec.continuous = true
+        wakeRec.interimResults = true
+        wakeRec.lang = 'en-US'
+
+        wakeRec.onresult = (event: any) => {
+          if (isVoiceModeOpenRef.current) return
+          let speech = ''
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            speech += event.results[i][0].transcript + ' '
+          }
+          const text = speech.toLowerCase().trim()
+
+          // Wake word regex: "hey sanve", "hi sanve", "sanve", "hello sanve"
+          const isWake = /\b(?:hey|hi|hello|ok)?\s*sanve\b/i.test(text)
+          if (isWake) {
+            playChime(880, 0.15, 'triangle')
+            try { wakeRec.stop() } catch {}
+
+            // Extract question after wake word if present
+            const query = text.replace(/.*?\b(?:hey|hi|hello|ok)?\s*sanve\b[,.\s]*/i, '').trim()
+
+            setIsVoiceModeOpen(true)
+            isVoiceModeOpenRef.current = true
+
+            if (query.length > 2) {
+              updateVoiceState('thinking')
+              sendMessage(query, true)
+            } else {
+              const greeting = "Hey! I'm Sanve, how can I help you?"
+              setLastAgentReply(greeting)
+              updateVoiceState('speaking')
+              speak(greeting, () => {
+                updateVoiceState('idle')
+                setTimeout(() => {
+                  if (isVoiceModeOpenRef.current) {
+                    startVoiceRecording()
+                  }
+                }, 300)
+              })
+            }
+          }
+        }
+
+        wakeRec.onend = () => {
+          if (wakeWordActive && !isVoiceModeOpenRef.current) {
+            setTimeout(() => {
+              if (wakeWordActive && !isVoiceModeOpenRef.current) {
+                try { wakeRec.start() } catch {}
+              }
+            }, 350)
+          }
+        }
+
+        wakeRec.onerror = (e: any) => {
+          console.warn('Wake word listener status:', e?.error)
+        }
+
+        wakeRec.start()
+        wakeWordRecognitionRef.current = wakeRec
+      } catch (err) {
+        console.warn('Wake word init error:', err)
+      }
+    }
+
+    if (wakeWordActive && !isVoiceModeOpen) {
+      initWakeWord()
+    }
+
+    return () => {
+      try { wakeRec?.stop() } catch {}
+    }
+  }, [wakeWordActive, isVoiceModeOpen])
 
   /* ── auto-scroll ── */
   useEffect(() => {
@@ -315,13 +452,11 @@ export const ChatPage: React.FC = () => {
 
     const utter = new SpeechSynthesisUtterance(clean.slice(0, 900))
     utter.lang = 'en-US'
-    utter.rate = 1.05
+    utter.rate = 1.02
+    utter.pitch = 1.08 // natural warm female pitch
 
-    const voices = window.speechSynthesis.getVoices()
-    const preferredVoice =
-      voices.find(v => (v.lang === 'en-US' || v.lang === 'en_US') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('David') || v.name.includes('Jenny'))) ||
-      voices.find(v => v.lang.startsWith('en'))
-    if (preferredVoice) utter.voice = preferredVoice
+    const femaleVoice = getFemaleVoice()
+    if (femaleVoice) utter.voice = femaleVoice
 
     utter.onstart = () => {
       if (isSpeakingCanceledRef.current) {
@@ -729,7 +864,11 @@ export const ChatPage: React.FC = () => {
   }
 
   const openVoiceMode = () => {
+    try {
+      wakeWordRecognitionRef.current?.stop()
+    } catch {}
     setIsVoiceModeOpen(true)
+    isVoiceModeOpenRef.current = true
     setIsMuted(false)
     startVoiceRecording()
   }
@@ -744,6 +883,14 @@ export const ChatPage: React.FC = () => {
     isRecordingActiveRef.current = false
     updateVoiceState('idle')
     setIsVoiceModeOpen(false)
+    isVoiceModeOpenRef.current = false
+    setTimeout(() => {
+      if (wakeWordActive && !isVoiceModeOpenRef.current) {
+        try {
+          wakeWordRecognitionRef.current?.start()
+        } catch {}
+      }
+    }, 400)
   }
 
   const toggleMute = () => {

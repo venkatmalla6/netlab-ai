@@ -118,6 +118,9 @@ class AIService:
         except RuntimeError as exc:
             response_text = f"⚠️ AI Error: {exc}"
 
+        # Clean legacy identity references
+        response_text = response_text.replace("NETLAB AI", "Sanve").replace("Netlab AI", "Sanve")
+
         # 5. Save assistant reply
         assistant_msg = ChatMessage(
             session_id=session.id, role=ChatRole.ASSISTANT, content=response_text  # type: ignore[arg-type]
@@ -154,7 +157,7 @@ class AIService:
             collected.append(error_msg)
             yield error_msg
 
-        full_response = "".join(collected)
+        full_response = "".join(collected).replace("NETLAB AI", "Sanve").replace("Netlab AI", "Sanve")
         assistant_msg = ChatMessage(
             session_id=session.id, role=ChatRole.ASSISTANT, content=full_response
         )
