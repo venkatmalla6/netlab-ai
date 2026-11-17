@@ -876,7 +876,7 @@ export const ChatPage: React.FC = () => {
         </div>
 
         <div style={{ padding: '12px 16px', borderTop: '1px solid #222', fontSize: 11, color: '#555' }}>
-          NETLAB AI • EVE-NG Copilot
+          Sanve • EVE-NG Copilot
         </div>
       </aside>
 
@@ -911,7 +911,7 @@ export const ChatPage: React.FC = () => {
           </button>
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 10 }}>
             <h1 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#e5e5e5' }}>
-              NETLAB AI
+              Sanve
             </h1>
             <span style={{
               fontSize: 10,
@@ -965,10 +965,10 @@ export const ChatPage: React.FC = () => {
                   🌐
                 </div>
                 <h2 style={{ color: '#e5e5e5', fontSize: 24, fontWeight: 600, margin: '0 0 8px' }}>
-                  Welcome to NETLAB AI
+                  Welcome to Sanve
                 </h2>
                 <p style={{ color: '#777', fontSize: 14, margin: '0 0 28px' }}>
-                  Your AI network engineering copilot. Talk naturally with ChatGPT Voice Mode or type commands below.
+                  Your AI network engineering copilot. Talk naturally with Sanve or type commands below.
                 </p>
 
                 {/* Big Voice Call-to-Action Card */}
@@ -1304,7 +1304,7 @@ export const ChatPage: React.FC = () => {
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Message NETLAB AI or tap headphones to talk..."
+                placeholder="Message Sanve or tap headphones to talk..."
                 rows={1}
                 style={{
                   flex: 1,
@@ -1379,7 +1379,7 @@ export const ChatPage: React.FC = () => {
             </div>
 
             <p style={{ textAlign: 'center', color: '#444', fontSize: 11, marginTop: 8 }}>
-              NETLAB AI can make mistakes. Verify configurations before applying to production networks.
+              Sanve can make mistakes. Verify configurations before applying to production networks.
             </p>
           </div>
         </div>
@@ -1424,7 +1424,7 @@ export const ChatPage: React.FC = () => {
                 animation: 'pulse 1.5s infinite',
               }} />
               <span style={{ fontSize: 13, fontWeight: 600, color: '#94a3b8', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
-                NETLAB AI Voice
+                Sanve Voice
               </span>
             </div>
 
@@ -1622,7 +1622,7 @@ export const ChatPage: React.FC = () => {
                 </div>
               ) : lastAgentReply ? (
                 <div>
-                  <span style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 600, display: 'block', marginBottom: 2 }}>NETLAB AI:</span>
+                  <span style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 600, display: 'block', marginBottom: 2 }}>SANVE:</span>
                   <span style={{ color: '#e2e8f0' }}>{lastAgentReply.slice(0, 180)}{lastAgentReply.length > 180 ? '…' : ''}</span>
                 </div>
               ) : (
